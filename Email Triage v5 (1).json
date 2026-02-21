@@ -1,0 +1,681 @@
+{
+  "name": "Email Triage v5",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "id": "836a04c8-e963-49da-9146-e4d701a38a80",
+      "name": "Nouveau Email Reçu1",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -9968,
+        4880
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ZiybzjxKNB9gi1CO",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tu es un agent de tri du service client.\n\nAnalyse le message du client et retourne UNIQUEMENT un objet JSON valide, sans texte autour.\n\nTu dois choisir OBLIGATOIREMENT le champ \"type\" parmi : \"livraison\", \"remboursement\", \"autre\".\n\nRetourne EXACTEMENT ce format :\n{\n  \"type\": \"livraison | remboursement | autre\",\n  \"resume\": \"resume clair et factuel\",\n  \"priorite\": \"faible | moyenne | elevee\"\n}\n\nRègles de tri obligatoires (ordre de priorité) :\n1) Si le message parle du guide / ebook / PDF / manuel / provenance / question produit => type = \"autre\"\n2) Sinon, si le client demande explicitement un remboursement => type = \"remboursement\"\n3) Sinon, si le sujet concerne retard / non-livraison / suivi colis / colis bloqué / livraison => type = \"livraison\"\n4) Sinon => type = \"autre\"\n\nImportant : un problème de guide doit TOUJOURS aller dans \"autre\" (jamais \"livraison\").\n\nMessage client : {{ $json.text || $json.body || $json.snippet }}\n",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Tu es un assistant de triage email service client. Ta sortie doit etre strictement un JSON valide, avec uniquement les champs type, resume, priorite. Priorité stricte: guide/provenance/produit => autre ; remboursement explicite => remboursement ; retard/suivi/livraison => livraison ; sinon autre. Ne retourne jamais d'autre clé."
+        }
+      },
+      "id": "e7cfa3d7-ff5b-4e1d-adeb-4de827eab0db",
+      "name": "Analyse Email - Classification1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -8912,
+        4848
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "1e179e19-9014-4545-ade4-df8921945a29",
+      "name": "OpenAI Chat Model2",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -9040,
+        5456
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "a1M3DJWKMxTixZzN",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "75d832bb-a83a-4c64-849a-9a69d748ebbe",
+      "name": "OpenAI Chat Model4",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -7568,
+        5664
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "a1M3DJWKMxTixZzN",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "v5-liv-type",
+                    "leftValue": "={{$json.type}}",
+                    "rightValue": "livraison",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "v5-remb-type",
+                    "leftValue": "={{$json.type}}",
+                    "rightValue": "remboursement",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "v5-autre-type",
+                    "leftValue": "={{$json.type}}",
+                    "rightValue": "autre",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        -8016,
+        4688
+      ],
+      "id": "b934523c-3c7d-4265-a2d1-a5b43bc46fdd",
+      "name": "triage mail 1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\n\nfunction normalizeType(rawType, rawText) {\n  const value = (rawType || '').toString().trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');\n  const text = (rawText || '').toString().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');\n\n  const guideSignals = /(guide|manuel|ebook|e-book|pdf|provenance|origine|question\\s*produit|produit)/i;\n  const refundSignals = /(remboursement|refund)/i;\n  const shippingSignals = /(retard|non[-\\s]?livraison|suivi|colis|livraison|expedition)/i;\n\n  if (guideSignals.test(value) || guideSignals.test(text)) return 'autre';\n  if (['remboursement', 'refund', 'retour'].includes(value) || refundSignals.test(text)) return 'remboursement';\n  if (['livraison', 'colis', 'delivery', 'retard', 'suivi', 'non_livraison', 'non-livraison', 'expedition'].includes(value) || shippingSignals.test(text)) return 'livraison';\n  return 'autre';\n}\n\nfunction tryParseJson(str) {\n  try { return JSON.parse(str); } catch { return null; }\n}\n\nfunction extractBalancedJsonObject(text) {\n  const start = text.indexOf('{');\n  if (start < 0) return null;\n\n  let depth = 0;\n  let inString = false;\n  let escaped = false;\n\n  for (let i = start; i < text.length; i++) {\n    const ch = text[i];\n\n    if (inString) {\n      if (escaped) {\n        escaped = false;\n      } else if (ch === '\\\\') {\n        escaped = true;\n      } else if (ch === '\"') {\n        inString = false;\n      }\n      continue;\n    }\n\n    if (ch === '\"') {\n      inString = true;\n      continue;\n    }\n\n    if (ch === '{') depth++;\n    if (ch === '}') {\n      depth--;\n      if (depth === 0) return text.slice(start, i + 1);\n    }\n  }\n\n  return null;\n}\n\nfunction parseModelOutput(rawOutput) {\n  if (rawOutput && typeof rawOutput === 'object') return rawOutput;\n\n  const text = (rawOutput || '').toString().trim();\n  if (!text) return null;\n\n  const candidates = [text];\n\n  const fenced = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  if (fenced && fenced[1]) candidates.push(fenced[1].trim());\n\n  const balanced = extractBalancedJsonObject(text);\n  if (balanced) candidates.push(balanced.trim());\n\n  for (const c of candidates) {\n    const parsed = tryParseJson(c);\n    if (parsed && typeof parsed === 'object') return parsed;\n  }\n\n  return null;\n}\n\nconst parsed = parseModelOutput(input.output);\nconst payload = parsed || {};\nconst sourceText = [input.text, input.body, input.snippet, input.subject, payload.resume].filter(Boolean).join(' ');\n\nconst normalizedType = normalizeType(payload.type, sourceText);\nconst priorityRaw = (payload.priorite || '').toString().trim().toLowerCase();\nconst normalizedPriorite = ['faible', 'moyenne', 'elevee'].includes(priorityRaw) ? priorityRaw : 'faible';\n\nconst resumeRaw = payload.resume || payload.summary || payload.explanation || input.resume || '';\nconst resume = resumeRaw\n  ? resumeRaw.toString().trim()\n  : 'Demande client a traiter.';\n\nreturn [{\n  json: {\n    ...input,\n    type: normalizedType,\n    resume,\n    priorite: normalizedPriorite\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -8304,
+        4736
+      ],
+      "id": "5f264ad7-c216-4725-9b59-d8ea912de85d",
+      "name": "Parse IA Outpu1"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -7568,
+        4448
+      ],
+      "id": "f522e328-f687-4415-9de9-e8470d8018b8",
+      "name": "OpenAI Chat Model5",
+      "credentials": {
+        "openAiApi": {
+          "id": "a1M3DJWKMxTixZzN",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tu es un agent du service client de {{ $node[\"Client Configuration1\"].json.brand_name }}.\n\nRédige un brouillon d’email professionnel en français pour répondre à un client concernant un problème de livraison.\n\nRègles obligatoires :\n- Ton formel (vous)\n- Réponse factuelle et concise\n- Ne pas promettre de date de livraison précise\n- Expliquer que le retard peut être lié à {{ $node[\"Client Configuration1\"].json.delay_reason }}\n- Indiquer qu’un message du transporteur sera envoyé dès qu’une mise à jour sera disponible\n- Signature obligatoire : {{ $node[\"Client Configuration1\"].json.support_signature }}\n\nContexte destinataire :\n- Nom : {{ $json.client_name || $node[\"Nouveau Email Reçu1\"].json.client_name || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Email : {{ $json.client_email || $json.from || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Sujet reçu : {{ $json.subject || $node[\"Nouveau Email Reçu1\"].json.Subject || $json.subject }}\n\nRésumé du problème :\n{{ $json.resume }}\n",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -7824,
+        3744
+      ],
+      "id": "81517331-75ee-4803-890d-0489c1edf288",
+      "name": "Draft – Livraison1",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Tu es un agent du service client de {{ $node[\"Client Configuration1\"].json.brand_name }}.\n\nRédige un brouillon d’email factuel et concis en français.\n\nCe type de réponse est utilisé pour les questions hors livraison/remboursement (provenance, guide, questions produit).\n\nRègle PRIORITAIRE (cas guide manquant) :\n- Si le client parle d'un guide manquant/non reçu (guide, manuel, e-book, ebook, PDF, pièce jointe absente), retourne EXACTEMENT ce message (sans modification) :\n\nBonjour,\n\nMerci pour votre message.\n\n{{ $node[\"Client Configuration1\"].json.guide_delivery_note }}\n\nNous vous le transmettons en pièce jointe à ce message afin que vous puissiez en profiter immédiatement.\n\nN’hésitez pas à nous confirmer sa bonne réception.\n\nCordialement,\n{{ $node[\"Client Configuration1\"].json.support_signature }}\n\nRègles obligatoires (hors cas prioritaire) :\n- Ne faire aucune supposition sur la situation du client\n- Ne fixer aucun délai\n- Ne faire aucune promesse\n- Signature obligatoire : {{ $node[\"Client Configuration1\"].json.support_signature }}\n\nContexte destinataire :\n- Nom : {{ $json.client_name || $node[\"Nouveau Email Reçu1\"].json.client_name || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Email : {{ $json.client_email || $json.from || $node[\"Nouveau Email Reçu1\"].json.From }}\n\nMessage client :\n{{ $json.text || $json.body || $json.snippet || $json.resume }}\n",
+        "options": {
+          "systemMessage": "Tu es un assistant IA de service client. Tu dois suivre strictement les règles du prompt utilisateur.\n\nPriorité absolue : si la demande concerne un guide manquant/non reçu (guide, manuel, e-book, ebook, PDF, pièce jointe absente), tu renvoies exactement le message fourni, sans rien ajouter ni retirer.\n\nSinon, rédige une réponse factuelle, concise et sans formulation émotionnelle."
+        }
+      },
+      "id": "01ea2acc-1303-4c58-9976-6295fc4e55af",
+      "name": "Draft – Autre1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -7552,
+        5008
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "support_signature",
+              "value": "Service client – Novea Paris",
+              "type": "string"
+            },
+            {
+              "id": "db55be54-987a-47a9-97aa-5b010b92398a",
+              "name": "brand_name",
+              "value": "Novea Paris",
+              "type": "string"
+            },
+            {
+              "id": "f5cd701a-a6b0-4994-a30a-4f41698cea21",
+              "name": "delay_reason",
+              "value": "des perturbations logistiques temporaires chez le transporteur",
+              "type": "string"
+            },
+            {
+              "id": "cfg-review_chat_id",
+              "name": "review_chat_id",
+              "value": "7651454520",
+              "type": "string"
+            },
+            {
+              "id": "cfg-support-email",
+              "name": "support_email",
+              "value": "support@noveaparis.com",
+              "type": "string"
+            },
+            {
+              "id": "cfg-refund-docs",
+              "name": "refund_required_items",
+              "value": "- La raison précise du retour\n- Une photo claire de chaque article concerné",
+              "type": "string"
+            },
+            {
+              "id": "cfg-guide-note",
+              "name": "guide_delivery_note",
+              "value": "Le guide inclus avec votre commande est un document numérique (format e-book). Il n’est pas envoyé en version papier dans le colis.",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "include": "=all",
+        "options": {}
+      },
+      "id": "750ad7c8-e395-46a9-b357-92a7af51b99e",
+      "name": "Client Configuration1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -9504,
+        4864
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $('Client Configuration1').first().json.brand_name }} – Suivi de votre commande",
+        "message": "={{ $json.output }}\n",
+        "options": {
+          "threadId": "={{ $json.threadId || $json.ThreadId || $(\"Nouveau Email Reçu1\").item.json.threadId || $(\"Nouveau Email Reçu1\").item.json.ThreadId }}",
+          "sendTo": "={{ $json.validated_send_to || $json.reply_to_recipient_raw || $json.reply_to_recipient || $json['Reply-To'] || $json.From || $json.reply_to_email || $json.client_email || $json.from || $(\"Nouveau Email Reçu1\").item.json['Reply-To'] || $(\"Nouveau Email Reçu1\").item.json.From || $(\"Nouveau Email Reçu1\").item.json.from }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -6528,
+        3536
+      ],
+      "id": "8079a776-ea18-46d3-92c2-e61e22d4c2d4",
+      "name": "Create a draft1",
+      "webhookId": "9519ebdb-6aeb-4834-b4a3-4c600a3fc50e",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ZiybzjxKNB9gi1CO",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $('Client Configuration1').first().json.brand_name }} – Réponse à votre message",
+        "message": "={{ $json.output }}\n",
+        "options": {
+          "threadId": "={{ $json.threadId || $json.ThreadId || $(\"Nouveau Email Reçu1\").item.json.threadId || $(\"Nouveau Email Reçu1\").item.json.ThreadId }}",
+          "sendTo": "={{ $json.validated_send_to || $json.reply_to_recipient_raw || $json.reply_to_recipient || $json['Reply-To'] || $json.From || $json.reply_to_email || $json.client_email || $json.from || $(\"Nouveau Email Reçu1\").item.json['Reply-To'] || $(\"Nouveau Email Reçu1\").item.json.From || $(\"Nouveau Email Reçu1\").item.json.from }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -6944,
+        4928
+      ],
+      "id": "d3602d50-c857-4fbc-b279-65359511be97",
+      "name": "Create a draft3",
+      "webhookId": "9519ebdb-6aeb-4834-b4a3-4c600a3fc50e",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ZiybzjxKNB9gi1CO",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Rédige un brouillon d’email professionnel en français pour répondre à une demande de remboursement.\n\nRègles obligatoires :\n- Ton formel (vouvoiement obligatoire)\n- Ne jamais accepter ni refuser le remboursement\n- Indiquer que la demande est en cours d’analyse\n- Ne fixer aucun délai\n- Ne faire aucune promesse\n- Demander systématiquement :\n{{ $node[\"Client Configuration1\"].json.refund_required_items }}\n\nContexte destinataire :\n- Nom : {{ $json.client_name || $node[\"Nouveau Email Reçu1\"].json.client_name || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Email : {{ $json.client_email || $json.from || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Sujet reçu : {{ $json.subject || $node[\"Nouveau Email Reçu1\"].json.Subject || $json.subject }}\n\nMarque : {{ $node[\"Client Configuration1\"].json.brand_name }}\nSignature : {{ $node[\"Client Configuration1\"].json.support_signature }}\n\nDemande client :\n{{ $json.resume }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        -7456,
+        4192
+      ],
+      "id": "ca7cd42c-dc2a-48ff-aa1e-33c35cf0701b",
+      "name": "Draft – Remboursement1",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "openAiApi": {
+          "id": "a1M3DJWKMxTixZzN",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $node[\"Client Configuration1\"].json.brand_name }} – Suivi de votre demande de remboursement",
+        "message": "={{ typeof $json.output === 'string' ? $json.output : ($json.output?.[0]?.content?.[0]?.text || $json.content?.[0]?.text || $json.text || '') }}\\n",
+        "options": {
+          "threadId": "={{ $json.threadId || $json.ThreadId || $(\"Nouveau Email Reçu1\").item.json.threadId }}",
+          "sendTo": "={{ $json.validated_send_to || $json.reply_to_recipient_raw || $json.reply_to_recipient || $json['Reply-To'] || $json.From || $json.reply_to_email || $json.client_email || $json.from || $(\"Nouveau Email Reçu1\").item.json['Reply-To'] || $(\"Nouveau Email Reçu1\").item.json.From }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -6672,
+        4112
+      ],
+      "id": "6e011eca-ec70-4f17-b29d-5b5278bcf043",
+      "name": "Create Draft – Remboursement1",
+      "webhookId": "180f8818-5838-4ac3-964f-2ad1b8842f25",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "ZiybzjxKNB9gi1CO",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"Client Configuration1\"].json.review_chat_id || \"7651454520\" }}",
+        "text": "=💸 NOUVELLE DEMANDE DE REMBOURSEMENT  👤 Client : {{ $json.client_name }} 📧 Email : {{ $json.client_email }} 📦 Commande / Colis : {{ $json.order_number }}  📝 Résumé : {{ $json.resume }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -5472,
+        4176
+      ],
+      "id": "37b2f0c2-7763-4b42-861b-ed5bcb560093",
+      "name": "Send a text message1",
+      "webhookId": "247d3ecc-5ddf-4e4a-93f8-4d7c32e9f156",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "telegramApi": {
+          "id": "vEsMlILzv1qHRMAX",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sourceEmails = $items(\"Nouveau Email Reçu1\");\nconst inItems = $input.all();\n\nreturn inItems.map((item, index) => {\n  const emailItem = sourceEmails[index]?.json || sourceEmails[0]?.json || {};\n  const fromRaw = item.json.from || item.json.From || emailItem.From || emailItem.from || '';\n  const emailMatch = fromRaw.match(/<(.+?)>/);\n  const email = emailMatch ? emailMatch[1] : (fromRaw || 'Email non disponible');\n  const name = fromRaw.split('<')[0]?.trim() || 'Client non identifié';\n\n  const fullText =\n    item.json.text ||\n    item.json.snippet ||\n    item.json.body ||\n    item.json.subject ||\n    emailItem.text ||\n    emailItem.snippet ||\n    emailItem.body ||\n    emailItem.subject ||\n    '';\n\n  const orderRegex = /(commande|cmd|order|colis|#)\\s*(n°|no|numéro|number)?\\s*[:#-]?\\s*([A-Z0-9-]{3,})/i;\n  const match = fullText.match(orderRegex);\n  const orderNumber = match ? match[3] : 'Non communiqué';\n\n  return {\n    json: {\n      ...item.json,\n      client_name: name,\n      client_email: email,\n      order_number: orderNumber,\n      resume: item.json.resume || 'Demande de remboursement'\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5840,
+        4160
+      ],
+      "id": "443f5feb-4f91-444d-b48a-152f9fc2006b",
+      "name": "Prepare Telegram – Remboursement1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nstore.processedMessages ??= {};\nconst now = Date.now();\nconst retentionMs = 14 * 24 * 60 * 60 * 1000;\nfor (const [k, ts] of Object.entries(store.processedMessages)) {\n  if (typeof ts !== 'number' || now - ts > retentionMs) delete store.processedMessages[k];\n}\n\nfunction normalizeLineBreaks(value) {\n  return (value || '').toString().replaceAll('\\r', ' ').replaceAll('\\n', ' ').trim();\n}\n\nfunction parseAddress(rawValue) {\n  const raw = normalizeLineBreaks(rawValue);\n  if (!raw) return { name: '', email: '', raw: '' };\n\n  const angle = raw.match(/^\\s*\"?([^\"<]*)\"?\\s*<\\s*([^>]+)\\s*>\\s*$/);\n  if (angle) {\n    const name = (angle[1] || '').trim().replace(/^\"+|\"+$/g, '');\n    const email = (angle[2] || '').trim().toLowerCase();\n    const normalized = name ? `${name} <${email}>` : email;\n    return { name, email, raw: normalized };\n  }\n\n  const first = raw.split(',')[0].trim();\n  const emailMatch = first.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);\n  const email = emailMatch ? emailMatch[0].toLowerCase() : '';\n  return { name: '', email, raw: first };\n}\n\nfunction hashString(input) {\n  const str = (input || '').toString();\n  let h = 2166136261;\n  for (let i = 0; i < str.length; i++) {\n    h ^= str.charCodeAt(i);\n    h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);\n  }\n  return (h >>> 0).toString(16).padStart(8, '0');\n}\n\nconst fromRaw = $json.From || $json.from || '';\nconst replyToRaw = $json['Reply-To'] || $json.replyTo || $json.reply_to || '';\nconst fromAddr = parseAddress(fromRaw);\nconst replyAddr = parseAddress(replyToRaw);\n\nconst headerMessageId = $json.messageId || $json.id || $json['Message-ID'] || $json.message_id || $json.gmailMessageId || '';\nconst threadId = $json.threadId || $json.ThreadId || '';\nconst subject = ($json.subject || $json.Subject || '').toString();\nconst sentDate = ($json.date || $json.Date || $json.internalDate || '').toString();\nconst bodySeed = ($json.snippet || $json.text || $json.body || '').toString().slice(0, 280);\nconst fallbackFingerprint = `${threadId}|${fromRaw}|${subject}|${sentDate}|${bodySeed}`;\nconst messageKey = headerMessageId ? headerMessageId.toString() : `fp:${hashString(fallbackFingerprint)}`;\n\nif (store.processedMessages[messageKey]) return [];\nstore.processedMessages[messageKey] = now;\n\nconst clientEmail = fromAddr.email || (fromRaw || 'Email non disponible');\nconst clientName = fromAddr.name || (fromRaw.split('<')[0]?.trim() || 'Client non identifie');\n\nconst replyToEmail = replyAddr.email || fromAddr.email || $json.client_email || clientEmail;\nconst replyToName = (replyAddr.name || fromAddr.name || $json.client_name || clientName || '')\n  .toString()\n  .trim()\n  .replace(/^\"+|\"+$/g, '')\n  .replaceAll('<', '')\n  .replaceAll('>', '')\n  .replaceAll('\\r', '')\n  .replaceAll('\\n', '');\n\nconst replyToRecipient = replyToName && replyToEmail\n  ? `${replyToName} <${replyToEmail}>`\n  : replyToEmail;\n\nconst replyToRecipientRaw = (replyAddr.raw || fromAddr.raw || replyToRecipient || '')\n  .toString()\n  .replaceAll('\\r', ' ')\n  .replaceAll('\\n', ' ')\n  .trim();\n\nconst text = ($json.text || $json.body || $json.snippet || $json.subject || '').toString();\nconst orderRegex = /(commande|cmd|order|colis|#)\\s*(n°|no|numero|number)?\\s*[:#-]?\\s*([A-Z0-9-]{3,})/i;\nconst orderMatch = text.match(orderRegex);\nconst orderNumber = orderMatch ? orderMatch[3] : 'Non communique';\n\nreturn [{\n  json: {\n    ...$json,\n    message_key: messageKey,\n    client_name: $json.client_name || clientName,\n    client_email: $json.client_email || clientEmail,\n    reply_to_name: replyToName || $json.client_name || clientName,\n    reply_to_email: replyToEmail,\n    reply_to_recipient: replyToRecipient,\n    reply_to_recipient_raw: replyToRecipientRaw,\n    order_number: $json.order_number || orderNumber,\n    intake_is_duplicate: false\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9168,
+        4896
+      ],
+      "id": "37f829e3-d536-4414-8d05-ced6110d6215",
+      "name": "Intake Guard + Context1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Nouveau Email Reçu1": {
+      "main": [
+        [
+          {
+            "node": "Client Configuration1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Client Configuration1": {
+      "main": [
+        [
+          {
+            "node": "Intake Guard + Context1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake Guard + Context1": {
+      "main": [
+        [
+          {
+            "node": "Analyse Email - Classification1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Analyse Email - Classification1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse Email - Classification1": {
+      "main": [
+        [
+          {
+            "node": "Parse IA Outpu1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse IA Outpu1": {
+      "main": [
+        [
+          {
+            "node": "triage mail 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "triage mail 1": {
+      "main": [
+        [
+          {
+            "node": "Draft – Livraison1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft – Remboursement1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft – Autre1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model5": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Draft – Livraison1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft – Livraison1": {
+      "main": [
+        [
+          {
+            "node": "Create a draft1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model4": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Draft – Autre1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft – Autre1": {
+      "main": [
+        [
+          {
+            "node": "Create a draft3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft – Remboursement1": {
+      "main": [
+        [
+          {
+            "node": "Create Draft – Remboursement1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Draft – Remboursement1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Telegram – Remboursement1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Telegram – Remboursement1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "aceea242-6114-4919-80c5-a6fbd62dc6dc",
+  "meta": {
+    "instanceId": "1660efa09ebdcf6270315253695cc362a265d2b1d2c3fe1761bd1a4e4e70512a"
+  },
+  "id": "ZlUtwCB6NmTVXS6k",
+  "tags": []
+}
