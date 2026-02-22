@@ -312,15 +312,15 @@
               "type": "string"
             },
             {
-              "id": "cfg-apology-refund",
-              "name": "apology_remboursement",
-              "value": "Nous vous présentons nos excuses pour cette situation et comprenons votre demande de remboursement.",
-              "type": "string"
-            },
-            {
               "id": "cfg-apology-other",
               "name": "apology_autre",
               "value": "Nous vous présentons nos excuses pour la gêne occasionnée.",
+              "type": "string"
+            },
+            {
+              "id": "cfg-refund-instruction-intro",
+              "name": "refund_instruction_intro",
+              "value": "Pour traiter votre demande, merci de nous transmettre les éléments suivants :",
               "type": "string"
             }
           ]
@@ -407,7 +407,7 @@
         "responses": {
           "values": [
             {
-              "content": "=Rédige un brouillon d’email professionnel en français pour répondre à une demande de remboursement.\n\nRègles obligatoires :\n- Ton formel (vouvoiement obligatoire)\n- Ne jamais accepter ni refuser le remboursement\n- Indiquer que la demande est en cours d’analyse\n- Ne fixer aucun délai\n- Ne faire aucune promesse\n- Inclure explicitement cette phrase d'excuse (sans la reformuler) : {{ $node[\"Client Configuration1\"].json.apology_remboursement }}\n- Demander systématiquement :\n{{ $node[\"Client Configuration1\"].json.refund_required_items }}\n\nContexte destinataire :\n- Nom : {{ $json.client_name || $node[\"Nouveau Email Reçu1\"].json.client_name || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Email : {{ $json.client_email || $json.from || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Sujet reçu : {{ $json.subject || $node[\"Nouveau Email Reçu1\"].json.Subject || $json.subject }}\n\nMarque : {{ $node[\"Client Configuration1\"].json.brand_name }}\nSignature : {{ $node[\"Client Configuration1\"].json.support_signature }}\n\nDemande client :\n{{ $json.resume }}"
+              "content": "=Rédige un brouillon d’email professionnel en français pour répondre à une demande de remboursement.\n\nRègles obligatoires :\n- Ton formel (vouvoiement obligatoire)\n- Ne jamais accepter ni refuser le remboursement\n- Indiquer que la demande est en cours d’analyse\n- Ne fixer aucun délai\n- Ne faire aucune promesse\n- Inclure explicitement cette phrase d'instruction (sans la reformuler) : {{ $node[\"Client Configuration1\"].json.refund_instruction_intro }}\n- Demander systématiquement :\n{{ $node[\"Client Configuration1\"].json.refund_required_items }}\n\nContexte destinataire :\n- Nom : {{ $json.client_name || $node[\"Nouveau Email Reçu1\"].json.client_name || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Email : {{ $json.client_email || $json.from || $node[\"Nouveau Email Reçu1\"].json.From }}\n- Sujet reçu : {{ $json.subject || $node[\"Nouveau Email Reçu1\"].json.Subject || $json.subject }}\n\nMarque : {{ $node[\"Client Configuration1\"].json.brand_name }}\nSignature : {{ $node[\"Client Configuration1\"].json.support_signature }}\n\nDemande client :\n{{ $json.resume }}"
             }
           ]
         },
