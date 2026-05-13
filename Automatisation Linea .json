@@ -1,0 +1,1047 @@
+{
+  "name": "Support Gmail - Shopify + 17TRACK - Brouillon livraison",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Setup avant activation\n\nCe workflow cree un brouillon Gmail, il n'envoie pas automatiquement. Il ne cree pas de brouillon pour les emails non-client: partenariat, prospection, newsletter, notification automatique ou message hors SAV.\n\nVersion finale de test: l'IA comprend le dernier mail, lit l'historique du thread, lit Shopify + 17TRACK, puis redige via un writer specialise.\n\nBriques reprises des anciens workflows: Thread Get, contexte Gmail robuste, detection formulaire de contact, routing writers, Draft Gate, mode brouillon reply/new.\n\nConfiguration modifiable: le node \"Brand & Product Settings\" contient la marque, les produits, les infos SAV, les consignes logistiques et le style.\n\nPour une autre marque dropshipping: duplique le workflow, branche le Gmail de la marque, puis modifie uniquement \"Brand & Product Settings\".\n\nLecture seule cote Shopify et tracking: aucune annulation, aucun remboursement, aucune modification de commande, aucune modification adresse, aucun enregistrement de tracking. Si 17TRACK est indisponible ou non configure, le workflow continue quand meme et cree un brouillon livraison avec une estimation large a corriger apres verification.\n\nLe numero de commande est optionnel: si le client ne le donne pas, Shopify est interroge avec l'email expediteur du client quand c'est possible.\n\nOpenAI: les 4 appels IA sont des nodes OpenAI natifs n8n. Dans chaque node, selectionne ton credential OpenAI. Le modele est en mode By ID via OPENAI_MODEL_LINEA_PARIS, sinon OPENAI_MODEL, sinon gpt-4.1-mini.\n\nReglages IA ajoutes: temperature 0.2, topP 0.9, retries 2, timeout 60s, limite tokens par agent.\n\nGarde-fou ajoute: \"AI Draft Safety Guard\" controle le brouillon avant Gmail et remplace par une reponse prudente si l IA mentionne des mots interdits ou promet une action sensible.\n\nTemplates historiques tries: les reponses utiles des anciennes automatisations sont dans \"Brand & Product Settings\"; les doublons et templates trop risqués ont ete retires avant test.\n\nVariables n8n a creer pour Linea Paris:\n- SHOPIFY_STORE_DOMAIN_LINEA_PARIS = boutique-linea.myshopify.com\n- SHOPIFY_ADMIN_ACCESS_TOKEN_LINEA_PARIS = token Admin API Shopify\n- SEVENTEEN_TRACK_API_KEY_LINEA_PARIS = cle API 17TRACK\n- OPENAI_MODEL_LINEA_PARIS = modele optionnel, ex: gpt-4.1-mini\n\nRegle dropshipping: ne jamais afficher dropshipping/fournisseur/Chine/origine; rester vrai, neutre et rassurant avec les infos disponibles.\n\nTeste d abord avec Manual Test Trigger, puis avec Gmail Trigger sur un petit lot.\n\nDebug test: si aucun brouillon Gmail n est cree, ouvre le node \"Diagnostic - Pourquoi pas de brouillon\" dans l execution pour voir la raison exacte du blocage.\n\nDraft Gate: si une adresse client est presente dans le mail ou le thread, le workflow tente maintenant de la recuperer via `draftGateEmailCandidates` au lieu de bloquer directement.\n\nMode permissif brouillons: temporairement, Draft Gate laisse creer un brouillon des qu une adresse email existe, meme si le triage avait classe le mail en no-draft ou si l adresse est no-reply/interne. Les cas ignores sont visibles dans `draftGateIgnoredBlocks`.",
+        "height": 840,
+        "width": 840,
+        "color": 4
+      },
+      "id": "c6bfe7ef-2eb5-4dc4-9654-13bb2766f902",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -860,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "-from:me newer_than:14d",
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "id": "c5ff7c8f-2d7f-47aa-92cc-66523ba7ed91",
+      "name": "Gmail Trigger - New Client Email",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -760,
+        -20
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c27533a0-af7d-48fd-bd97-637c5adf3af0",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      from: 'Client Test <client@example.com>',\n      subject: 'Ou est ma commande ?',\n      text: 'Bonjour, je voudrais savoir ou se trouve ma commande. Merci',\n      id: 'manual-test-message',\n      threadId: ''\n    }\n  }\n];"
+      },
+      "id": "f860d2d6-86f3-4df3-8a9b-39831e9b4934",
+      "name": "Mock Client Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const idx = typeof $itemIndex === 'number' ? $itemIndex : 0;\n\nlet triggerItem = {};\ntry {\n  const triggerItems = $items('Gmail Trigger - New Client Email');\n  triggerItem = Array.isArray(triggerItems) && triggerItems[idx] && triggerItems[idx].json ? triggerItems[idx].json : {};\n} catch {\n  triggerItem = {};\n}\n\nconst inputEnvelope = $input.first().json || {};\nconst hasTrigger = Object.keys(triggerItem).length > 0;\nconst source = hasTrigger ? triggerItem : inputEnvelope;\nconst threadEnvelope = Array.isArray(inputEnvelope.messages) ? inputEnvelope : {};\n\nconst unique = (values) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];\n\nfunction normalizeText(value) {\n  return String(value || '')\n    .replace(/\\r/g, '\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n}\n\nfunction extractEmail(value) {\n  const raw = String(value || '').trim();\n  if (!raw) return '';\n  const angle = raw.match(/<([^>]+)>/);\n  if (angle && angle[1]) return angle[1].trim().toLowerCase();\n  const direct = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);\n  return direct ? direct[0].toLowerCase() : '';\n}\n\nfunction extractEmails(value) {\n  return unique((String(value || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/ig) || []).map((email) => email.toLowerCase()));\n}\n\nfunction extractEmailFromAny(value) {\n  if (!value) return '';\n  if (typeof value === 'string') return extractEmail(value);\n  if (Array.isArray(value)) {\n    for (const item of value) {\n      const found = extractEmailFromAny(item);\n      if (found) return found;\n    }\n    return '';\n  }\n  if (typeof value === 'object') {\n    return extractEmail(value.address) || extractEmail(value.email) || extractEmail(value.text) || extractEmail(value.html) || extractEmail(value.value) || '';\n  }\n  return extractEmail(String(value));\n}\n\nfunction extractNameFromAny(value) {\n  if (!value) return '';\n  if (typeof value === 'string') {\n    const raw = String(value).trim();\n    const angle = raw.match(/^([^<]+)</);\n    return angle && angle[1] ? angle[1].replace(/[\"']/g, '').trim() : '';\n  }\n  if (Array.isArray(value)) {\n    for (const item of value) {\n      const found = extractNameFromAny(item);\n      if (found) return found;\n    }\n    return '';\n  }\n  if (typeof value === 'object') return String(value.name || value.displayName || '').trim();\n  return '';\n}\n\nfunction decodeBase64Url(input) {\n  const raw = String(input || '').trim();\n  if (!raw) return '';\n  const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');\n  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);\n  try {\n    return Buffer.from(padded, 'base64').toString('utf8');\n  } catch {\n    return '';\n  }\n}\n\nfunction decodeQuotedPrintable(input) {\n  const src = String(input || '');\n  if (!src || !/=(?:\\r?\\n|[A-F0-9]{2})/i.test(src)) return src;\n  const cleaned = src.replace(/=(\\r?\\n)/g, '');\n  const bytes = [];\n  for (let i = 0; i < cleaned.length; i += 1) {\n    const ch = cleaned[i];\n    if (ch === '=' && /^[A-F0-9]{2}$/i.test(cleaned.slice(i + 1, i + 3))) {\n      bytes.push(parseInt(cleaned.slice(i + 1, i + 3), 16));\n      i += 2;\n    } else {\n      bytes.push(...Buffer.from(ch, 'utf8'));\n    }\n  }\n  try {\n    return Buffer.from(bytes).toString('utf8');\n  } catch {\n    return cleaned;\n  }\n}\n\nfunction decodeHtml(input) {\n  return String(input || '')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&lt;/gi, '<')\n    .replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;|&apos;/gi, \"'\")\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ');\n}\n\nfunction buildHeaderMap(message) {\n  const values = [];\n  if (Array.isArray(message?.headers)) {\n    values.push(...message.headers);\n  } else if (message?.headers && typeof message.headers === 'object') {\n    for (const [name, value] of Object.entries(message.headers)) {\n      if (Array.isArray(value)) value.forEach((item) => values.push({ name, value: String(item || '') }));\n      else values.push({ name, value: String(value || '') });\n    }\n  }\n  if (Array.isArray(message?.payload?.headers)) values.push(...message.payload.headers);\n  const map = {};\n  for (const header of values) {\n    const key = String(header?.name || '').toLowerCase();\n    if (!key) continue;\n    map[key] = map[key] || [];\n    map[key].push(String(header?.value || ''));\n  }\n  return map;\n}\n\nconst getHeader = (map, name) => (map[String(name || '').toLowerCase()] || [])[0] || '';\n\nfunction payloadToText(message) {\n  const plain = [];\n  const html = [];\n  const visit = (part) => {\n    if (!part) return;\n    const mime = String(part.mimeType || '').toLowerCase();\n    const data = part.body?.data ? decodeBase64Url(part.body.data) : '';\n    if (data && mime.includes('text/plain')) plain.push(data);\n    else if (data && mime.includes('text/html')) html.push(decodeHtml(data));\n    if (Array.isArray(part.parts)) part.parts.forEach(visit);\n  };\n  visit(message?.payload);\n  const directText = message?.text || message?.textPlain || message?.body?.text || '';\n  const directHtml = message?.html || message?.textAsHtml || message?.body?.html || '';\n  const text = normalizeText(decodeQuotedPrintable([directText, ...plain].filter(Boolean).join('\\n\\n')));\n  if (text) return text;\n  return normalizeText(decodeHtml(decodeQuotedPrintable([directHtml, ...html, message?.snippet].filter(Boolean).join('\\n\\n'))));\n}\n\nfunction isSystemSender(email) {\n  const clean = String(email || '').toLowerCase();\n  return !clean || /(^|[._-])(no-?reply|noreply|do-?not-?reply)([._-]|@)/.test(clean) || /mailer-daemon|notification|notifications|automated|shopify|forms?/.test(clean);\n}\n\nfunction isAutomatedOrderSummaryMessage(message) {\n  if (!message || message.role !== 'support') return false;\n  const text = normalizeText([message.subject, message.text, message.snippet].filter(Boolean).join('\\n\\n')).toLowerCase();\n  return [\n    /\\bconfirmation de commande\\b/,\n    /\\brésumé de commande\\b/,\n    /\\bresume de commande\\b/,\n    /r.sum. de commande/,\n    /\\bnuméro de suivi\\b/,\n    /\\bnumero de suivi\\b/,\n    /\\btracking\\b/,\n    /\\bsuivre votre colis\\b/,\n    /\\badresse de livraison\\b/,\n    /\\bmerci pour votre achat\\b/,\n  ].some((pattern) => pattern.test(text));\n}\n\nfunction extractOrderName(text) {\n  const sourceText = String(text || '');\n  const patterns = [\n    /(?:commande|order|cmd|numero de commande|numéro de commande|n\\s*de commande|n°\\s*de commande)\\s*[:#-]?\\s*#?([0-9][A-Z0-9-]{2,29})\\b/i,\n    /#\\s*([0-9]{3,12}[A-Z0-9-]*)\\b/i,\n  ];\n  for (const pattern of patterns) {\n    const match = sourceText.match(pattern);\n    if (!match) continue;\n    const candidate = String(match[1] || '').replace(/^#/, '').trim();\n    if (/^[0-9][A-Z0-9-]{2,29}$/i.test(candidate)) return '#' + candidate;\n  }\n  return '';\n}\n\n\nfunction normalizeForMatch(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .toLowerCase();\n}\n\nfunction isQuotedThreadBoundary(line) {\n  const clean = normalizeForMatch(line).trim();\n  if (!clean) return false;\n  return [\n    /^>+/,\n    /^[-_ ]{2,}\\s*(message d origine|original message|forwarded message|message transfere)/,\n    /^le .+ a .*crit\\s*:/,\n    /^on .+ wrote\\s*:/,\n    /^(de|from|envoye|sent|a|to|objet|subject)\\s*:/,\n    /^date\\s*:/,\n    /^expediteur\\s*:/\n  ].some((pattern) => pattern.test(clean));\n}\n\nfunction isOrderRecapBoundary(line) {\n  const clean = normalizeForMatch(line).trim();\n  if (!clean) return false;\n  return [\n    /\\bresume de commande\\b/,\n    /\\brecapitulatif de commande\\b/,\n    /\\bconfirmation de commande\\b/,\n    /\\bdetails de la commande\\b/,\n    /\\barticles commandes\\b/,\n    /\\badresse de livraison\\b/,\n    /\\badresse de facturation\\b/,\n    /\\bmode de livraison\\b/,\n    /\\bnumero de suivi\\b/,\n    /\\bnum[e?]ro de suivi\\b/,\n    /\\bsuivre votre colis\\b/,\n    /\\bvoir votre commande\\b/,\n    /\\bmerci pour votre achat\\b/,\n    /\\btotal\\s*:/,\n    /\\bsous[- ]?total\\s*:/\n  ].some((pattern) => pattern.test(clean));\n}\n\nfunction extractLatestCustomerMessage(text) {\n  const normalized = normalizeText(text);\n  if (!normalized) return '';\n\n  const lines = normalized.split('\\n');\n  const kept = [];\n  for (const rawLine of lines) {\n    const line = rawLine.trim();\n    if (!line && kept.length === 0) continue;\n    if (isQuotedThreadBoundary(line) && kept.some((value) => value.trim())) break;\n    if (isOrderRecapBoundary(line) && kept.some((value) => value.trim())) break;\n    if (/^>+/.test(line)) continue;\n    kept.push(rawLine);\n  }\n\n  let latest = normalizeText(kept.join('\\n'));\n  latest = latest\n    .replace(/\\n{2,}\\s*(cordialement|bien cordialement|bien a vous|bonne journee)[\\s\\S]*$/i, (match) => match.length > 500 ? '' : match)\n    .trim();\n\n  if (!latest || latest.length < 12) return normalized;\n  return latest;\n}\n\nconst currentHeaderMap = buildHeaderMap(source);\nconst currentFromRaw = source.from || getHeader(currentHeaderMap, 'from') || source.From || '';\nconst currentReplyToRaw = source.replyTo || getHeader(currentHeaderMap, 'reply-to') || '';\nconst currentFromEmail = extractEmailFromAny(currentFromRaw);\nconst currentReplyToEmail = extractEmailFromAny(currentReplyToRaw);\nconst subject = source.subject || getHeader(currentHeaderMap, 'subject') || source.Subject || 'Demande client';\nconst currentMessageId = String(source.id || source.messageId || source.message?.id || '').trim();\nconst currentThreadId = String(source.threadId || source.message?.threadId || source.payload?.threadId || threadEnvelope.id || '').trim();\n\nconst inboxAddresses = unique([\n  ...((currentHeaderMap['delivered-to'] || []).map(extractEmail)),\n  ...((currentHeaderMap['x-original-to'] || []).map(extractEmail)),\n  ...((currentHeaderMap['envelope-to'] || []).map(extractEmail)),\n  ...((currentHeaderMap.to || []).map(extractEmail)),\n  extractEmailFromAny(source.to),\n]).filter(Boolean);\n\nlet currentText = payloadToText(source);\nconst rawMessages = Array.isArray(threadEnvelope.messages) ? threadEnvelope.messages : [];\nconst currentThreadMessage = rawMessages.find((message) => String(message?.id || message?.messageId || '') === currentMessageId) || null;\nif (!currentText && currentThreadMessage) currentText = payloadToText(currentThreadMessage);\nif (!currentText && source.snippet) currentText = normalizeText(source.snippet);\n\nconst rawCurrentText = currentText;\nconst latestCustomerMessage = extractLatestCustomerMessage(currentText);\nconst customerMessageForAi = latestCustomerMessage || currentText;\nconst latestCustomerMessageWasTrimmed = Boolean(latestCustomerMessage && normalizeText(latestCustomerMessage) !== normalizeText(currentText));\n\nconst currentTextEmails = extractEmails(currentText);\nconst formContextLikely = isSystemSender(currentFromEmail) || /contact form|formulaire|form submission|nouveau message|online store|shopify|message depuis/i.test(currentText + '\\n' + subject);\nconst formEmailCandidates = currentTextEmails.filter((email) => email && !isSystemSender(email) && !inboxAddresses.includes(email));\n\nconst headerCandidates = unique([\n  currentReplyToEmail,\n  currentFromEmail,\n  extractEmailFromAny(source.sender),\n  extractEmailFromAny(source.returnPath),\n]).filter((email) => email && !isSystemSender(email) && !inboxAddresses.includes(email));\n\nlet replyToResolved = '';\nlet replyToSource = 'blocked';\nlet replyAddressConfidence = 'none';\nlet replyAddressAmbiguous = false;\nlet replyRoutingReason = 'no_safe_reply_target';\n\nif (formContextLikely && formEmailCandidates.length === 1) {\n  replyToResolved = formEmailCandidates[0];\n  replyToSource = 'contact_form_body';\n  replyAddressConfidence = 'high';\n  replyRoutingReason = 'single_email_inside_contact_form';\n} else if (formContextLikely && formEmailCandidates.length > 1) {\n  replyToResolved = formEmailCandidates[0];\n  replyToSource = 'contact_form_body';\n  replyAddressConfidence = 'medium';\n  replyAddressAmbiguous = true;\n  replyRoutingReason = 'multiple_emails_inside_contact_form';\n} else if (headerCandidates.length === 1) {\n  replyToResolved = headerCandidates[0];\n  replyToSource = 'header';\n  replyAddressConfidence = 'high';\n  replyRoutingReason = 'single_non_system_header';\n} else if (headerCandidates.length > 1) {\n  replyToResolved = headerCandidates[0];\n  replyToSource = 'header';\n  replyAddressConfidence = 'medium';\n  replyAddressAmbiguous = true;\n  replyRoutingReason = 'multiple_non_system_headers';\n} else if (formEmailCandidates.length) {\n  replyToResolved = formEmailCandidates[0];\n  replyToSource = 'body_email';\n  replyAddressConfidence = 'medium';\n  replyRoutingReason = 'fallback_email_inside_body';\n}\n\nconst replyConflictWithInbox = replyToResolved ? inboxAddresses.includes(replyToResolved) : false;\nif (replyConflictWithInbox) {\n  replyToResolved = '';\n  replyToSource = 'blocked';\n  replyAddressConfidence = 'none';\n  replyRoutingReason = 'reply_target_is_internal';\n}\n\nconst structuredMessages = rawMessages\n  .map((message, index) => {\n    const map = buildHeaderMap(message);\n    const from = getHeader(map, 'from') || message.from || '';\n    const to = getHeader(map, 'to') || message.to || '';\n    const fromEmail = extractEmailFromAny(from);\n    const role = fromEmail && !inboxAddresses.includes(fromEmail) && !isSystemSender(fromEmail) ? 'client' : 'support';\n    return {\n      id: String(message?.id || message?.messageId || 'msg-' + index),\n      role,\n      from,\n      to,\n      fromEmail,\n      subject: String(getHeader(map, 'subject') || message?.subject || ''),\n      internalDate: Number(message?.internalDate || Date.parse(getHeader(map, 'date')) || index),\n      text: payloadToText(message),\n      snippet: normalizeText(message?.snippet || ''),\n    };\n  })\n  .filter((message) => message.text || message.snippet || message.subject)\n  .sort((a, b) => a.internalDate - b.internalDate);\n\nconst previousThreadMessages = structuredMessages.filter((message) => message.id !== currentMessageId);\nconst usableThreadMessages = previousThreadMessages.filter((message) => !isAutomatedOrderSummaryMessage(message));\nconst recentThreadMessages = usableThreadMessages.slice(-8);\nconst threadHistoryText = recentThreadMessages\n  .map((message) => '[' + message.role.toUpperCase() + '] ' + normalizeText(message.text || message.snippet).slice(0, 1200))\n  .filter(Boolean)\n  .join('\\n\\n');\n\nconst supportHistoryText = recentThreadMessages.filter((message) => message.role === 'support').map((message) => normalizeText(message.text || message.snippet)).join('\\n\\n');\nconst clientHistoryText = recentThreadMessages.filter((message) => message.role === 'client').map((message) => normalizeText(message.text || message.snippet)).join('\\n\\n');\nconst recentClientParticipants = unique(recentThreadMessages.filter((message) => message.role === 'client').map((message) => message.fromEmail)).filter(Boolean);\n\nconst threadSignals = {\n  hasPriorSupportReply: /\\bcordialement\\b|\\bnous restons disponibles\\b/i.test(supportHistoryText),\n  priorAskedReturnReason: /\\b(raison de votre retour|préciser la raison|preciser la raison)\\b/i.test(supportHistoryText),\n  priorAskedForPhoto: /\\b(photo|photos|image|emballage)\\b/i.test(supportHistoryText),\n  priorSizeExchangeProposal: /\\b(taille différente|taille differente|échange|echange)\\b/i.test(supportHistoryText),\n  clientAlreadyAskedRefund: /\\b(rembours|refund|argent)\\b/i.test(clientHistoryText),\n};\n\nconst customerFirstName = (() => {\n  const name = extractNameFromAny(currentFromRaw).replace(/\\s+/g, ' ').trim();\n  if (!name || name.includes('@')) return '';\n  const first = name.split(' ')[0].replace(/[^A-Za-zÀ-ÖØ-öø-ÿ'-]/g, '');\n  return first.length >= 2 ? first : '';\n})();\n\nconst customerEmail = replyToResolved || currentReplyToEmail || (!isSystemSender(currentFromEmail) ? currentFromEmail : '') || formEmailCandidates[0] || '';\nconst orderName = extractOrderName(subject + '\\n' + currentText);\n\nreturn [\n  {\n    json: {\n      gmailMessageId: currentMessageId,\n      threadId: currentThreadId,\n      originalThreadId: currentThreadId,\n      originalMessageId: currentMessageId,\n      fromRaw: currentFromRaw,\n      originalFromEmail: currentFromEmail,\n      originalReplyTarget: replyToResolved,\n      replyToResolved,\n      replyToSource,\n      replyAddressConfidence,\n      replyAddressAmbiguous,\n      replyRoutingReason,\n      replyConflictWithInbox,\n      inboxAddresses,\n      recentClientParticipants,\n      contactFormLikely: formContextLikely,\n      customerEmail,\n      customerFirstName,\n      originalSubject: subject,\n      customerMessage: customerMessageForAi,\n      latestCustomerMessage: customerMessageForAi,\n      rawCustomerMessage: rawCurrentText,\n      latestCustomerMessageWasTrimmed,\n      threadHistoryText,\n      threadSignals,\n      orderName,\n      receivedAt: source.date || source.internalDate || new Date().toISOString(),\n      createAsReply: Boolean(currentThreadId)\n    }\n  }\n];"
+      },
+      "id": "d3f74d48-36cf-4b6b-a93d-d49265a2e8e7",
+      "name": "Email Context Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\n\n// ============================================================\n// CONFIG MODIFIABLE PAR MARQUE + PRODUITS\n// Pour une autre marque: duplique le workflow et modifie ce bloc.\n// Le reste du workflow reste identique.\n// ============================================================\n\nconst config = {\n  brand: {\n    id: 'linea_paris',\n    name: 'Linéa Paris',\n    shopifyStoreDomainVar: 'SHOPIFY_STORE_DOMAIN_LINEA_PARIS',\n    shopifyAdminAccessTokenVar: 'SHOPIFY_ADMIN_ACCESS_TOKEN_LINEA_PARIS',\n    seventeenTrackApiKeyVar: 'SEVENTEEN_TRACK_API_KEY_LINEA_PARIS',\n    signature: 'L’équipe Linéa Paris',\n    defaultEta: \"courant de la semaine / début de semaine prochaine / fin de semaine prochaine\",\n    styleGuide: {\n      opening: 'Bonjour,\\n\\nMerci pour votre message.',\n      closing: 'Nous restons disponibles pour toute question.\\nCordialement,\\nL’équipe Linéa Paris',\n      tone: 'amical, chaleureux, rassurant, naturel, professionnel, empathique, clair, adapté à une clientèle senior; jamais robotique',\n      replyLength: 'réponse courte, aérée, 4 à 7 lignes maximum, avec une ligne vide entre chaque petit paragraphe; jamais de gros bloc de texte',\n      neverSound: ['agressif', 'froid', 'robotique', 'défensif', 'trop technique']\n    }\n  },\n\n  // Règles générales valables pour les marques dropshipping.\n  // Ces éléments ne doivent pas être visibles par le client.\n  logisticsPolicy: {\n    normalDeliveryWindow: '7 à 10 jours ouvrés après expédition',\n    shippingReassurance: 'Votre commande est en cours d’acheminement et arrive dans les prochains jours.',\n    returnWindow: '30 jours après réception de la commande',\n    guidePolicy: 'Le guide est un document numérique. Pour Linéa Paris, le brouillon peut indiquer qu’il est remis en pièce jointe car l’humain ajoute le PDF avant envoi.',\n    paymentPolicy: 'Le paiement par carte bancaire est sécurisé. PayPal peut ne pas être visible selon l’appareil ou la session.',\n    productAuthenticity: 'Le design des genouillères est volontairement discret, sans logo cousu; cela n’impacte ni la qualité ni l’efficacité.',\n    forbiddenCustomerTerms: [\n      'dropshipping',\n      'fournisseur',\n      'Chine',\n      'chinois',\n      'AliExpress',\n      'usine',\n      'entrepôt étranger',\n      'pays d’expédition',\n      'origine du colis'\n    ],\n    customerFacingPhrases: [\n      'Votre commande est en cours d’acheminement.',\n      'Elle arrive dans les prochains jours.',\n      'Le suivi transporteur sera actualisé prochainement.',\n      'Nous avons bien pris en compte votre demande.'\n    ],\n    deliveryEtaPhrases: [\n      \"courant de la semaine / début de semaine prochaine / fin de semaine prochaine\",\n      \"dans les prochains jours\",\n      \"sous quelques jours ouvrés\"\n    ],\n    neverPromiseAutomatically: [\n      'remboursement confirmé',\n      'annulation confirmée',\n      'modification d’adresse confirmée',\n      'remplacement confirmé'\n    ],\n    ifUnsure: 'Ne jamais dire “je ne sais pas”. Quand la demande est claire, valider la demande et utiliser le template adapté. Si une information manque vraiment, demander uniquement l’élément manquant.'\n  },\n\n  // Templates historiques tries avant test: on garde les cas frequents, utiles et adaptes aux brouillons relus.\n  // Pour une autre marque: remplace les bodies, garde les ids/familles ou ajoute tes propres templates.\n  supportTemplates: {\n    livraison: {\n      id: 'livraison',\n      family: 'livraison',\n      description: 'Suivi, retard, demande “où est ma commande”, non-réception ou livraison en cours.',\n      source: 'curated_from_NUITM_V4_and_SAV_Email_Copilot',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre commande a subi un léger retard d’acheminement.\\n\\nJe suis désolé pour ce contretemps.\\n\\nElle devrait arriver courant de la semaine / début de semaine prochaine / fin de semaine prochaine.\\n\\nVotre commande est bien en cours d’acheminement.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'La phrase de leger retard est volontairement separee pour pouvoir etre supprimee facilement si ce n est pas vraiment un retard.',\n        'Adapter avec les vraies donnees Shopify et 17TRACK.',\n        'Ne pas inventer de date exacte.',\n        'Ne pas donner le numero ou lien de suivi sauf si le client le demande clairement.',\n        'Ne jamais mentionner dropshipping, fournisseur, Chine ou origine logistique.'\n      ]\n    },\n    livraison_affichage_livre: {\n      id: 'livraison_affichage_livre',\n      family: 'livraison',\n      description: 'Le client comprend que le suivi ou la commande indique une livraison effectuee, alors qu il explique ne pas avoir recu le colis.',\n      source: 'user_confirmed_delivered_display_issue_template',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous rencontrons actuellement un léger problème d’affichage sur certains suivis de commande.\\n\\nVotre colis n’a pas encore été livré.\\n\\nVotre commande est bien en cours d’acheminement et les délais de livraison actuels sont estimés entre 4 et 9 jours ouvrés.\\n\\nNous restons attentifs au suivi de votre livraison et votre commande devrait arriver dans les prochains jours.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser quand le sens du message est: le client voit une livraison indiquee comme effectuee mais dit que le colis n est pas recu.',\n        'Ne pas confirmer que le colis est livre.',\n        'Ne pas donner de date exacte.'\n      ]\n    },\n    remboursement: {\n      id: 'remboursement',\n      family: 'remboursement',\n      description: 'Demande de remboursement directe ou client qui maintient le remboursement.',\n      source: 'user_confirmed_refund_no_return_template',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous avons bien pris en compte votre demande et le remboursement de votre commande a été effectué.\\n\\nVous recevrez également un email de confirmation du remboursement.\\n\\nLe délai d’apparition sur votre moyen de paiement est généralement de 5 à 10 jours ouvrés.\\n\\nVous n’avez pas besoin de retourner votre commande.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et effectue le remboursement avant envoi.',\n        'Dire que le remboursement de la commande a ete effectue.',\n        'Indiquer le delai bancaire de 5 a 10 jours ouvres.',\n        'Preciser clairement que le client n a pas besoin de retourner la commande.',\n        'Indiquer qu un email de confirmation du remboursement sera recu.'\n      ],\n      needsHumanReview: true\n    },\n    retour_details: {\n      id: 'retour_details',\n      family: 'remboursement',\n      description: 'Client demande un retour, une procedure de retour, ou un remboursement lie a un retour.',\n      source: 'user_confirmed_refund_no_return_template',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous avons bien pris en compte votre demande et le remboursement de votre commande a été effectué.\\n\\nVous recevrez également un email de confirmation du remboursement.\\n\\nLe délai d’apparition sur votre moyen de paiement est généralement de 5 à 10 jours ouvrés.\\n\\nVous n’avez pas besoin de retourner votre commande.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et effectue le remboursement avant envoi.',\n        'Ne jamais donner de procedure de retour pour ce cas.',\n        'Dire que le remboursement de la commande a ete effectue.',\n        'Preciser que le client n a pas besoin de retourner la commande.',\n        'Indiquer le delai bancaire de 5 a 10 jours ouvres et l email de confirmation.'\n      ],\n      needsHumanReview: true\n    },\n    genouillere_manquante: {\n      id: 'genouillere_manquante',\n      family: 'remboursement',\n      description: 'Client indique qu une genouillere, une paire ou un article attendu manque dans le colis, notamment offre achetee + offerte.',\n      source: 'user_confirmed_execution_39_missing_knee_brace',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nJe suis désolé pour ce désagrément.\\n\\nNous avons bien pris en compte votre demande.\\n\\nNous allons faire le nécessaire afin de renvoyer la genouillère manquante.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et effectue le renvoi avant envoi.',\n        'Ne pas demander photo ni numero de commande quand la demande est deja claire.',\n        'Ne pas parler d offre achetee/offerte, de paire, ni de suivi: rester generique car l humain arrangera le brouillon.',\n        'Dire simplement que la demande est prise en compte et que nous allons faire le necessaire pour renvoyer la genouillere manquante.'\n      ],\n      needsHumanReview: true\n    },\n    produit_abime: {\n      id: 'produit_abime',\n      family: 'remboursement',\n      description: 'Client signale un article abime, defectueux, casse ou inutilisable a la reception.',\n      source: 'user_confirmed_generic_draft_flow',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nJe suis désolé pour ce souci à la réception.\\n\\nNous avons bien pris en compte votre demande.\\n\\nNous allons faire le nécessaire pour régler la situation.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et choisit la solution avant envoi.',\n        'Ne pas demander photo ni numero de commande par defaut; rester generique et actionnable.',\n        'Dire simplement que la demande est prise en compte et que nous allons faire le necessaire.'\n      ],\n      needsHumanReview: true\n    },\n    retour_taille: {\n      id: 'retour_taille',\n      family: 'remboursement',\n      description: 'Retour lié à une taille qui ne convient pas, échange ou solution taille.',\n      source: 'curated_from_SAV_Email_Copilot_user_confirmed_draft_flow',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande liée à la taille a bien été prise en compte.\\n\\nNous avons fait le nécessaire de notre côté.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        \"Brouillon uniquement: l humain relit et effectue l action avant envoi.\",\n        \"Ne pas annoncer de suivi; rester sur la prise en compte et le necessaire fait.\",\n        \"Garder needsHumanReview.\"\n      ],\n      needsHumanReview: true\n    },\n    annulation: {\n      id: 'annulation',\n      family: 'remboursement',\n      description: 'Demande d’annulation avant ou pendant traitement/acheminement.',\n      source: 'curated_from_SAV_Email_Copilot_safened',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande d’annulation a bien été prise en compte.\\n\\nNous allons faire le nécessaire de notre côté.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        \"Brouillon uniquement: l humain relit et effectue l action avant envoi.\",\n        \"Valider la prise en compte sans confirmer definitivement si l annulation depend de l avancement de la commande.\",\n        \"Toujours garder needsHumanReview.\"\n      ],\n      needsHumanReview: true\n    },\n    adresse_incomplete: {\n      id: 'adresse_incomplete',\n      family: 'autre',\n      description: 'Client demande une modification d adresse mais ne donne pas encore la nouvelle adresse complete.',\n      source: 'user_confirmed_address_flow',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande de modification d’adresse a bien été prise en compte.\\n\\nPouvez-vous simplement nous transmettre la nouvelle adresse complète à utiliser pour votre commande ?\\n\\nDès que nous l’aurons, nous ferons le nécessaire.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser quand le client demande un changement d adresse sans donner la nouvelle adresse.',\n        'Demander seulement l adresse manquante, sans repondre par une verification vague.',\n        'Garder needsHumanReview.'\n      ],\n      needsHumanReview: true\n    },\n    adresse: {\n      id: 'adresse',\n      family: 'autre',\n      description: 'Client demande une modification ou correction d adresse de livraison et donne la nouvelle adresse.',\n      source: 'curated_from_execution_29_user_confirmed_draft_flow',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande de modification d’adresse a bien été prise en compte.\\n\\nNous avons fait le nécessaire pour prendre en compte la nouvelle adresse transmise.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et effectue la modification avant envoi.',\n        'A utiliser seulement quand le client donne la nouvelle adresse complete.',\n        'Si la commande est deja trop avancee, l humain adapte avant envoi.'\n      ],\n      needsHumanReview: true\n    },\n    taille_incomplete: {\n      id: 'taille_incomplete',\n      family: 'autre',\n      description: 'Client veut modifier la taille mais il manque la taille souhaitée ou le numéro de commande.',\n      source: 'curated_from_SAV_Email_Copilot',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande de modification de taille a bien été prise en compte.\\n\\nPouvez-vous simplement nous confirmer la taille souhaitée ?\\n\\nDès que nous l’aurons, nous ferons le nécessaire.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        \"Demander uniquement la taille souhaitee quand elle manque.\",\n        \"Ne pas demander le numero de commande par defaut si le thread ou le sujet permet deja de retrouver la commande.\",\n        \"Garder needsHumanReview.\"\n      ],\n      needsHumanReview: true\n    },\n    taille_confirmee: {\n      id: 'taille_confirmee',\n      family: 'autre',\n      description: 'Modification de taille demandée avec les informations nécessaires.',\n      source: 'curated_from_SAV_Email_Copilot_user_confirmed_draft_flow',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nVotre demande de modification de taille a bien été prise en compte.\\n\\nNous avons fait le nécessaire pour prendre en compte la taille souhaitée.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Brouillon uniquement: l humain relit et effectue la modification avant envoi.',\n        'A utiliser quand la taille souhaitee et la commande sont identifiables.',\n        'Garder needsHumanReview.'\n      ],\n      needsHumanReview: true\n    },\n    guide: {\n      id: 'guide',\n      family: 'autre',\n      description: 'Client demande explicitement le guide, livret, manuel, notice ou PDF.',\n      source: 'curated_from_NUITM_V4',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nLe guide \\\"Genou sans douleur\\\" est un document dématérialisé : il n’est donc pas glissé dans le colis.\\n\\nIl vous a déjà été envoyé par email après votre commande.\\n\\nNous vous le remettons en pièce jointe à cet email afin que vous puissiez le consulter facilement.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Dire que le guide est dematerialise, pas ajoute physiquement au colis, et qu il a deja ete envoye par email apres la commande.',\n        'Dire qu il est remis en piece jointe a cet email.',\n        'Brouillon uniquement: l humain doit ajouter manuellement le PDF du guide avant envoi.'\n      ],\n      requiresAttachment: true,\n      needsHumanReview: true\n    },\n    offre: {\n      id: 'offre',\n      family: 'autre',\n      description: 'Confusion entre offre 1 genouillère et offre 2 genouillères.',\n      source: 'curated_from_SAV_Email_Copilot',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nJe comprends votre remarque concernant l’offre sélectionnée.\\n\\nNous avons bien pris en compte votre demande et allons faire le nécessaire pour régler la situation au plus vite.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        \"Ne pas supposer que le client a pris une offre precise.\",\n        \"Si le client dit qu il manque une genouillere ou une paire, utiliser genouillere_manquante a la place.\",\n        \"Rester generique: prise en compte et necessaire fait, sans supposer l offre exacte.\"\n      ]\n    },\n    logo: {\n      id: 'logo',\n      family: 'autre',\n      description: 'Absence de logo, marquage ou etiquette visible; doute sur la presentation ou l authenticite du produit.',\n      source: 'user_confirmed_logo_template',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous comprenons votre surprise concernant la présentation de nos genouillères.\\n\\nL’absence de logo cousu ou d’étiquette visible est volontaire. Ce choix a été fait suite à des retours clients indiquant que l’étiquette pouvait gêner lors du port.\\n\\nCela n’impacte en rien la qualité ni l’efficacité du produit.\\n\\nNos genouillères de compression sont bien confectionnées en fibres de bambou, choisies pour leur douceur et leur confort. Elles peuvent être portées de jour comme de nuit selon votre besoin.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser quand le client parle de logo absent, etiquette absente, doute sur le marquage ou authenticite.',\n        'Expliquer clairement que l absence de logo cousu ou d etiquette visible est volontaire, suite aux retours clients sur la gene au port.',\n        'Rappeler fibres de bambou, douceur, confort, qualite et efficacite sans ton defensif.',\n        'Ne pas mentionner la provenance ou les centres logistiques.'\n      ]\n    },\n    genouillere_roule: {\n      id: 'genouillere_roule',\n      family: 'autre',\n      description: 'Client indique que la genouillere roule, glisse, descend ou ne tient pas correctement pendant le port.',\n      source: 'user_confirmed_rolling_knee_brace_template',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous comprenons tout à fait que cela puisse être gênant si la genouillère a tendance à s’enrouler pendant le port.\\n\\nCela peut dépendre de votre morphologie, du positionnement ou de la taille choisie. Nous vous conseillons de ne pas placer la genouillère trop haut sur la cuisse, mais de la positionner à environ 4 cm au-dessus du genou.\\n\\nSi malgré cela elle continue de s’enrouler, nous pouvons vous envoyer la taille du dessus si vous le souhaitez.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser quand le client dit que la genouillere roule, glisse, descend ou ne tient pas bien.',\n        'Donner d abord le conseil de positionnement: environ 4 cm au-dessus du genou, pas trop haut sur la cuisse.',\n        'Proposer la taille du dessus si le client le souhaite, car le brouillon est relu par un humain avant envoi.',\n        'Garder needsHumanReview car une action de renvoi ou echange peut suivre.'\n      ],\n      needsHumanReview: true\n    },\n    conseil_taille: {\n      id: 'conseil_taille',\n      family: 'autre',\n      description: 'Conseil de taille avant achat ou doute sur la taille a choisir, sans probleme de genouillere qui roule ou glisse.',\n      source: 'execution_review_size_advice',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nPour choisir la taille la plus confortable, l’idéal est de partir de votre mesure et de choisir une taille qui maintient le genou sans trop comprimer.\\n\\nSi vous êtes entre deux tailles, nous conseillons généralement de prendre la taille au-dessus afin d’éviter une compression trop forte.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser pour les questions de taille avant achat, tour de genou en cm, ou doute sur une taille plus adaptee.',\n        'Ne pas inventer une taille exacte si le tableau des tailles n est pas fourni dans le contexte.',\n        'Si le client demande clairement un échange ou un renvoi, utiliser retour_taille a la place.'\n      ]\n    },\n    livraison_internationale: {\n      id: 'livraison_internationale',\n      family: 'autre',\n      description: 'Question avant achat sur la livraison vers un pays precis ou a l international.',\n      source: 'execution_review_shipping_destination',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nLa livraison est proposée dans plusieurs pays, selon les options disponibles au moment de la commande.\\n\\nVous pouvez renseigner votre adresse lors du passage de commande : si votre pays apparaît dans la liste, la livraison est bien disponible.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser pour les questions de livraison au Luxembourg, Royaume-Uni, Belgique, Suisse ou international.',\n        'Ne pas promettre un pays si la boutique ne le propose pas dans le checkout.',\n        'Garder une reponse courte et rassurante.'\n      ]\n    },\n    commande_confirmation: {\n      id: 'commande_confirmation',\n      family: 'autre',\n      description: 'Client vient de commander et demande si la commande ou le paiement a bien ete pris en compte.',\n      source: 'execution_review_order_confirmation',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nSi votre commande a bien été validée, un email de confirmation est envoyé automatiquement à l’adresse utilisée lors de l’achat.\\n\\nPensez aussi à vérifier vos courriers indésirables, car il arrive que l’email de confirmation s’y glisse.\\n\\nSi vous ne retrouvez rien, revenez vers nous avec l’adresse utilisée lors de la commande et nous vous aiderons à vérifier.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'A utiliser quand le client doute de la validation du paiement ou de la commande.',\n        'Ne pas confirmer la commande sans donnee Shopify fiable.',\n        'Demander seulement l information utile si la confirmation est introuvable.'\n      ],\n      needsHumanReview: true\n    },\n    product_info_generic: {\n      id: 'product_info_generic',\n      family: 'autre',\n      description: 'Question produit générale: usage, entretien, paiement, confort ou informations non sensibles.',\n      source: 'curated_from_NUITM_V4',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNos genouillères de compression en fibres de bambou sont conçues pour apporter maintien et confort au quotidien.\\n\\nElles peuvent être portées selon votre besoin, de jour comme de nuit, notamment pour accompagner les moments de repos.\\n\\nPour l’entretien, nous recommandons un lavage à 30°C en mode délicat ou à la main, sans sèche-linge.\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Adapter seulement avec les faits produit disponibles.',\n        'Ne pas donner d avis medical personnalise.'\n      ]\n    },\n    generic_clarification: {\n      id: 'generic_clarification',\n      family: 'autre',\n      description: 'Demande ambiguë, incomplète ou cas non couvert par les autres templates.',\n      source: 'curated_from_NUITM_V4',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nPouvez-vous nous préciser votre demande en quelques mots afin que nous puissions vous répondre au mieux ?\\n\\nNous restons disponibles pour toute question.\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Fallback principal quand le triage n est pas certain.',\n        'A utiliser plutot que forcer un template sensible.'\n      ]\n    },\n    empty_body: {\n      id: 'empty_body',\n      family: 'autre',\n      description: 'Email vide, illisible ou contenu non récupéré par Gmail.',\n      source: 'curated_from_NUITM_V4',\n      body: \"Bonjour,\\n\\nMerci pour votre message.\\n\\nNous n’avons pas réussi à lire correctement le contenu de votre email.\\n\\nPouvez-vous nous renvoyer votre demande en texte afin que nous puissions vous répondre rapidement ?\\n\\nCordialement,\\nL’équipe Linéa Paris\",\n      safeUsageNotes: [\n        'Garder ce template pour eviter les brouillons vides.'\n      ]\n    }\n  },\n\n  products: [\n    {\n      id: 'linea_genouilleres_compression_bambou',\n      name: 'Genouillères de compression en fibres de bambou',\n      summary: 'Genouillères de compression premium conçues pour améliorer le confort, le maintien et réduire les gênes articulaires.',\n      aliases: [\n        'genouillère',\n        'genouillères',\n        'genouillere',\n        'genouilleres',\n        'attelle genou',\n        'orthèse genou',\n        'knee brace',\n        'genouillères de compression bambou',\n        'genouillères bambou',\n        'genouillère bambou'\n      ],\n      category: 'genouillères de compression premium en fibres de bambou',\n      targetCustomers: 'principalement personnes de plus de 50 ans souffrant de douleurs au genou, arthrose, ménisque, raideurs ou gonflements',\n      benefits: [\n        'aider à soulager la douleur',\n        'améliorer la circulation',\n        'réduire les gonflements',\n        'apporter maintien et confort',\n        'utilisation possible de jour comme de nuit, notamment pour la récupération nocturne'\n      ],\n      productFacts: [\n        'fibres de bambou',\n        'design volontairement discret',\n        'pas de logo cousu sur le produit',\n        'absence de marquage normale',\n        'étiquette retirée pour améliorer le confort lors du port',\n        'l’absence de marquage n’impacte ni la qualité ni l’efficacité'\n      ],\n      commonIssues: [\n        {\n          topic: 'pas_de_logo_ou_marquage',\n          answerGuidance: 'Rassurer clairement: absence de logo cousu ou d etiquette visible volontaire, suite aux retours clients car l etiquette pouvait gener le port; fibres de bambou, douceur, confort, aucune incidence sur la qualite ou l efficacite.'\n        },\n        {\n          topic: 'genouilleres_qui_roulent_ou_tiennent_mal',\n          answerGuidance: 'Expliquer que cela peut dependre de la morphologie, du positionnement ou de la taille; conseiller de positionner la genouillere environ 4 cm au-dessus du genou; proposer la taille du dessus si le client le souhaite.'\n        },\n        {\n          topic: 'guide_non_recu',\n          answerGuidance: 'Dire que le guide est proposé en version numérique; proposer de le renvoyer. Ne pas dire “pièce jointe” sauf si le workflow ajoute réellement le fichier.'\n        },\n        {\n          topic: 'mauvaise_taille',\n          answerGuidance: 'Rester flexible et indiquer que la demande a bien été prise en compte, sans formule vague de vérification si le cas est clair.'\n        },\n        {\n          topic: 'doute_arnaque',\n          answerGuidance: 'Rassurer calmement, rappeler que la commande est prise en charge, que la livraison est en cours si c’est le cas, et mentionner la garantie 30 jours sans ton défensif.'\n        }\n      ],\n      deliveryGuidance: {\n        averageAfterShipment: '7 à 10 jours ouvrés après expédition',\n        canBeLongerFor: ['Suisse', 'Luxembourg', 'Belgique'],\n        delayPhrase: 'Votre commande a subi un retard durant son acheminement. Rassurez-vous, elle est bien en cours de livraison et devrait vous être livrée entre la fin de cette semaine et le début de la semaine prochaine au plus tard.',\n        standardPhrase: 'Votre commande a bien été expédiée. Les délais de livraison sont généralement de 7 à 10 jours ouvrés après expédition.'\n      },\n      care: [\n        'lavage machine 30°C délicat',\n        'lavage à la main possible',\n        'pas de sèche-linge'\n      ],\n      guarantee: '30 jours satisfait ou remboursé',\n      paymentNotes: [\n        'paiement par carte bancaire sécurisé',\n        'PayPal peut parfois ne pas être visible selon l’appareil'\n      ]\n    },\n\n    // Garde ce produit par défaut pour une marque qui vend plusieurs articles.\n    // Duplique l'objet ci-dessus pour ajouter un produit.\n    {\n      id: 'default_product',\n      name: 'Produit de la marque',\n      aliases: [],\n      category: '',\n      targetCustomers: '',\n      benefits: [],\n      productFacts: [],\n      commonIssues: [],\n      deliveryGuidance: {},\n      care: [],\n      guarantee: '',\n      paymentNotes: []\n    }\n  ]\n};\n\nreturn [\n  {\n    json: {\n      ...ctx,\n      brandConfig: config,\n      brand: config.brand,\n      products: config.products,\n      logisticsPolicy: config.logisticsPolicy,\n      supportTemplates: config.supportTemplates,\n      supportTemplateIds: Object.keys(config.supportTemplates || {}),\n      brandId: config.brand.id,\n      brandName: config.brand.name,\n      supportSignature: config.brand.signature || ('L’équipe ' + (config.brand.name || 'support'))\n    }\n  }\n];"
+      },
+      "id": "d9108bf1-24e6-4f98-8c59-1a6cfb9c79a2",
+      "name": "Brand & Product Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst brand = ctx.brand || {};\nconst storeDomainVar = brand.shopifyStoreDomainVar || 'SHOPIFY_STORE_DOMAIN';\nconst storeDomain = $vars[storeDomainVar] || $vars.SHOPIFY_STORE_DOMAIN || 'CHANGE-ME.myshopify.com';\nconst orderSearch = String(ctx.orderName || '').replace(/^#/, '').trim();\nconst shouldLookupOrder = ctx.needsOrderLookup !== false && Boolean(ctx.customerEmail || orderSearch);\nconst query = shouldLookupOrder\n  ? (orderSearch ? 'name:' + orderSearch : 'email:' + ctx.customerEmail)\n  : 'id:0';\n\nconst graphQlQuery = [\n  'query FindSupportOrder($query: String!) {',\n  '  orders(first: 1, query: $query, sortKey: PROCESSED_AT, reverse: true) {',\n  '    nodes {',\n  '      id',\n  '      name',\n  '      email',\n  '      createdAt',\n  '      processedAt',\n  '      displayFinancialStatus',\n  '      displayFulfillmentStatus',\n  '      customer {',\n  '        firstName',\n  '        lastName',\n  '        email',\n  '      }',\n  '      fulfillments(first: 10) {',\n  '        id',\n  '        name',\n  '        status',\n  '        displayStatus',\n  '        createdAt',\n  '        updatedAt',\n  '        estimatedDeliveryAt',\n  '        deliveredAt',\n  '        inTransitAt',\n  '        trackingInfo(first: 10) {',\n  '          company',\n  '          number',\n  '          url',\n  '        }',\n  '      }',\n  '    }',\n  '  }',\n  '}'\n].join('\\n');\n\nreturn [\n  {\n    json: {\n      ...ctx,\n      shopifySearchQuery: query,\n      shouldLookupOrder,\n      shopifyStoreDomainVar: storeDomainVar,\n      shopifyAdminAccessTokenVar: brand.shopifyAdminAccessTokenVar || 'SHOPIFY_ADMIN_ACCESS_TOKEN',\n      seventeenTrackApiKeyVar: brand.seventeenTrackApiKeyVar || 'SEVENTEEN_TRACK_API_KEY',\n      shopifyUrl: 'https://' + storeDomain + '/admin/api/2026-04/graphql.json',\n      shopifyBody: {\n        query: graphQlQuery,\n        variables: { query }\n      }\n    }\n  }\n];"
+      },
+      "id": "f88a10fd-9613-42d2-b1a6-f1f641d6d725",
+      "name": "Prepare Shopify Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.shopifyUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Shopify-Access-Token",
+              "value": "={{ $vars[$json.shopifyAdminAccessTokenVar || $json.brand?.shopifyAdminAccessTokenVar || 'SHOPIFY_ADMIN_ACCESS_TOKEN'] }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.shopifyBody }}",
+        "options": {}
+      },
+      "id": "e160b7e5-d8e1-4ccf-bdf1-6cd57ef317b0",
+      "name": "Shopify GraphQL - Find Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        80
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Prepare Shopify Query').first().json;\nconst shopifyRaw = $input.first().json;\nconst order = shopifyRaw?.data?.orders?.nodes?.[0] || null;\nconst fulfillments = Array.isArray(order?.fulfillments) ? order.fulfillments : [];\nlet trackingNumber = '';\nlet trackingCompany = '';\nlet trackingUrl = '';\nlet estimatedDeliveryAt = '';\n\nfor (const fulfillment of fulfillments) {\n  if (!estimatedDeliveryAt && fulfillment.estimatedDeliveryAt) estimatedDeliveryAt = fulfillment.estimatedDeliveryAt;\n  const infos = Array.isArray(fulfillment.trackingInfo) ? fulfillment.trackingInfo : [];\n  for (const info of infos) {\n    if (info?.number) {\n      trackingNumber = info.number;\n      trackingCompany = info.company || '';\n      trackingUrl = info.url || '';\n      break;\n    }\n  }\n  if (trackingNumber) break;\n}\n\nreturn [\n  {\n    json: {\n      ...ctx,\n      shopifyRaw,\n      orderFound: Boolean(order),\n      order,\n      orderDisplayName: order?.name || ctx.orderName || '',\n      fulfillmentStatus: order?.displayFulfillmentStatus || '',\n      trackingNumber,\n      trackingCompany,\n      trackingUrl,\n      estimatedDeliveryAt,\n      track17RegisterBody: trackingNumber ? [{ number: trackingNumber, carrier: null, tag: order?.name || ctx.orderName || '' }] : [],\n      track17QueryBody: trackingNumber ? [{ number: trackingNumber, carrier: null }] : []\n    }\n  }\n];"
+      },
+      "id": "e2e369cc-6fcb-4f8a-b978-e09e6ab14762",
+      "name": "Prepare 17TRACK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.17track.net/track/v2/gettrackinfo",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "17token",
+              "value": "={{ $vars[$('Prepare 17TRACK').first().json.seventeenTrackApiKeyVar || $('Prepare 17TRACK').first().json.brand?.seventeenTrackApiKeyVar || 'SEVENTEEN_TRACK_API_KEY'] }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Prepare 17TRACK').first().json.track17QueryBody }}",
+        "options": {}
+      },
+      "id": "a112151a-d854-43db-95bb-dd56d405c516",
+      "name": "17TRACK - Get Tracking Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        80
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.draftSubject }}",
+        "emailType": "text",
+        "message": "={{ $json.draftMessage }}",
+        "options": {
+          "sendTo": "={{ $json.replyToResolved }}",
+          "threadId": "={{ $json.threadIdResolved }}"
+        }
+      },
+      "id": "c5852ba2-8779-4b93-90fa-5dfb41373b8a",
+      "name": "Gmail - Create Draft Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3960,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\n\nconst allowedTemplateIds = Object.keys(ctx.supportTemplates || {});\nconst templateEnum = allowedTemplateIds.length ? allowedTemplateIds : ['generic_clarification'];\nconst schema = {\n  type: 'object',\n  additionalProperties: false,\n  properties: {\n    intent: {\n      type: 'string',\n      enum: [\n        'tracking_request',\n        'late_order',\n        'refund_request',\n        'cancel_order',\n        'address_change',\n        'delivered_not_received',\n        'damaged_or_missing',\n        'delivery_information',\n        'product_information',\n        'exchange_return_request',\n        'angry_complaint',\n        'partnership_request',\n        'marketing_or_sales',\n        'automated_notification',\n        'not_customer_request',\n        'other'\n      ]\n    },\n    language: { type: 'string', enum: ['fr', 'en', 'other'] },\n    sentiment: { type: 'string', enum: ['neutral', 'worried', 'angry', 'urgent'] },\n    product_id: { type: 'string' },\n    product_name: { type: 'string' },\n    order_name: { type: 'string' },\n    customer_email_in_message: { type: 'string' },\n    summary_fr: { type: 'string' },\n    requested_action_fr: { type: 'string' },\n    needs_order_lookup: { type: 'boolean' },\n    needs_human_review: { type: 'boolean' },\n    confidence: { type: 'number' },\n    recommended_template_id: { type: 'string', enum: templateEnum },\n    should_create_draft: { type: 'boolean' },\n    skip_draft_reason: { type: 'string' }\n  },\n  required: [\n    'intent',\n    'language',\n    'sentiment',\n    'product_id',\n    'product_name',\n    'order_name',\n    'customer_email_in_message',\n    'summary_fr',\n    'requested_action_fr',\n    'needs_order_lookup',\n    'needs_human_review',\n    'confidence',\n    'recommended_template_id',\n    'should_create_draft',\n    'skip_draft_reason'\n  ]\n};\n\nconst productOptions = (ctx.products || []).map((product) => ({\n  id: product.id,\n  name: product.name,\n  aliases: product.aliases || [],\n  category: product.category || ''\n}));\n\nconst templateOptions = Object.values(ctx.supportTemplates || {}).map((template) => ({\n  id: template.id,\n  family: template.family,\n  description: template.description,\n  requiresAttachment: Boolean(template.requiresAttachment),\n  needsHumanReview: Boolean(template.needsHumanReview)\n}));\n\nconst priorityRules = [\n  'Regles prioritaires absolues:',\n  '1. Base-toi uniquement sur latest_customer_message pour identifier les demandes auxquelles repondre.',\n  '2. Utilise thread_history et full_current_email_for_reference uniquement comme contexte, jamais pour ajouter une demande absente du dernier message client.',\n  '3. Ignore les emails automatiques, confirmations de commande, resumes de commande, recapitulatif produit et textes logistiques: un mot present seulement dans ces zones ne compte pas comme demande client.',\n  '4. Si le mail vient d un formulaire de contact, le vrai client peut etre dans le corps du message, pas dans le From.',\n  '5. Ne fais aucune action: pas de remboursement, pas d annulation, pas de modification de commande.',\n  '6. Ne mentionne jamais dropshipping, fournisseur, Chine, pays d expedition ou origine logistique.',\n  '7. Identifie le produit seulement si le message permet de le faire clairement. Sinon product_id = default_product.',\n  '8. Choisis recommended_template_id dans la liste des templates autorises. Si aucun ne correspond clairement, utilise generic_clarification ou product_info_generic.',\n  '9. Si le mail ne vient pas d un client ou ne concerne pas une demande SAV/commande Linéa Paris, mets should_create_draft=false et choisis intent partnership_request, marketing_or_sales, automated_notification ou not_customer_request.'\n].join('\\n');\n\nconst userContext = {\n  brand: {\n    name: ctx.brandName || ctx.brand?.name || '',\n    styleGuide: ctx.brand?.styleGuide || {}\n  },\n  products: productOptions,\n  templates: templateOptions,\n  replyRouting: {\n    contactFormLikely: Boolean(ctx.contactFormLikely),\n    replyToSource: ctx.replyToSource || '',\n    replyAddressConfidence: ctx.replyAddressConfidence || '',\n    replyAddressAmbiguous: Boolean(ctx.replyAddressAmbiguous)\n  },\n  from: ctx.fromRaw || '',\n  detected_customer_email: ctx.customerEmail || '',\n  subject: ctx.originalSubject || '',\n  latest_customer_message: ctx.latestCustomerMessage || ctx.customerMessage || '',\n  full_current_email_for_reference: ctx.rawCustomerMessage || '',\n  thread_history: ctx.threadHistoryText || '',\n  thread_signals: ctx.threadSignals || {},\n  regex_order_guess: ctx.orderName || ''\n};\n\nconst aiUnderstandingPrompt = [\n  'Tu es un Agent IA de triage SAV e-commerce professionnel.',\n  priorityRules,\n  'Mission: comprendre le sens du dernier email, décider s il faut créer un brouillon SAV, choisir l intention principale, le produit si clair, et le meilleur template historique a utiliser ensuite.',\n  'Si le dernier message contient plusieurs demandes, ne les fusionne pas et n en oublie aucune: le brouillon final devra repondre a toutes les demandes detectees.',\n  'Si le client donne un numero de commande, place-le dans order_name, idealement avec # si present. Sinon laisse order_name vide.',\n  'Ne crée PAS de brouillon pour: demande de partenariat, influenceur, affiliation, agence marketing/SEO, prospection commerciale, newsletter, notification automatique, no-reply, alerte de plateforme, email fournisseur ou message qui ne demande rien au SAV Linéa Paris.',\n  'Pour ces cas non-client, retourne should_create_draft=false, needs_order_lookup=false, needs_human_review=false, recommended_template_id=generic_clarification, et explique brièvement skip_draft_reason.',\n  'needs_order_lookup doit etre true pour les demandes de suivi, retard, remboursement, annulation, adresse, colis livre non recu, produit abime/manquant ou retour lie a une commande.',\n  'needs_human_review doit etre true pour remboursement, retour, annulation, adresse, menace/litige, client tres enerve, produit abime/manquant, livre non recu, ou template sensible.',\n  'Retour/remboursement: si le client demande un retour ou un remboursement, choisis remboursement ou retour_details. Pour Linéa Paris, ne propose pas de procedure de retour: le brouillon doit dire remboursement effectue et pas besoin de retourner la commande.',\n  'Produit/genouillere manquante: si le client explique avoir recu une seule genouillere, une paire incomplete ou un article manquant dans le colis, choisis genouillere_manquante. Ne suppose pas une offre achetee/offerte si le client ne le dit pas, et ne choisis pas retour_details pour ce cas.',\n  'Produit abime ou defectueux: si le client dit que l article est abime, casse, defectueux ou inutilisable a reception, choisis produit_abime plutot que retour_details ou remboursement.',\n  'Guide: choisis guide uniquement si le client demande explicitement le guide/livret/manuel/notice/PDF. Le mot guide dans un historique ou email automatique ne suffit pas.',\n  'Livraison: si le client demande ou est ma commande, retard, date, non reception ou suivi, choisis livraison.',\n  'Affichage livre: si le client explique, avec ses propres mots, que le suivi/transporteur/commande semble indiquer une livraison deja faite alors qu il dit ne pas avoir recu le colis, choisis livraison_affichage_livre. Comprends le sens, ne te limite pas aux mots exacts.',\n  'Logo/authenticite: si le client parle d absence de logo, etiquette, marquage, doute sur la presentation ou authenticite, choisis logo.',\n  'Genouillere qui roule/glisse: si le client dit que la genouillere roule, s enroule, glisse, descend ou ne tient pas correctement, choisis genouillere_roule. Ne confonds pas avec un simple conseil de taille avant achat.',\n  'Taille: si la taille ne convient pas apres reception, choisis retour_taille. Si le client demande une modification de taille et donne la taille souhaitee, choisis taille_confirmee. Si la taille souhaitee manque, choisis taille_incomplete et demande seulement la taille souhaitee.',\n  'Retourne UNIQUEMENT un JSON valide. Aucun markdown, aucun commentaire, aucun texte hors JSON.',\n  'Schema JSON attendu:',\n  JSON.stringify(schema, null, 2),\n  'Contexte SAV:',\n  JSON.stringify(userContext, null, 2)\n].join('\\n\\n');\n\nconst openAiUnderstandingBody = {\n  model: $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini',\n  input: aiUnderstandingPrompt,\n  temperature: 0.2,\n  top_p: 0.9,\n  max_output_tokens: 900,\n  store: false\n};\n\nreturn [\n  {\n    json: {\n      ...ctx,\n      aiUnderstandingSchema: schema,\n      aiUnderstandingPrompt,\n      openAiUnderstandingBody\n    }\n  }\n];"
+      },
+      "id": "fd7e1de6-464f-48f4-8239-84aaecdd7044",
+      "name": "Prepare AI Understanding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "={{ $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini' }}",
+          "mode": "id"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "={{ $json.aiUnderstandingPrompt }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "dfc124f9-bd56-4c17-9587-8b57d4738f45",
+      "name": "Agent IA - Triage",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        600,
+        80
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Prepare AI Understanding').first().json;\nconst raw = $input.first().json;\n\nfunction textFrom(value) {\n  if (typeof value === 'string') return value;\n  if (value == null) return '';\n  if (typeof value === 'object') return JSON.stringify(value);\n  return String(value);\n}\n\nfunction extractOutputText(response) {\n  const directCandidates = [\n    response?.output_text,\n    typeof response?.output === 'string' ? response.output : '',\n    response?.text,\n    response?.message?.content,\n    response?.choices?.[0]?.message?.content,\n    response?.data?.[0]?.content?.[0]?.text,\n    response?.content,\n    response?.json,\n    response?.result,\n    response?.answer\n  ];\n  for (const candidate of directCandidates) {\n    const text = textFrom(candidate).trim();\n    if (text) return text;\n  }\n\n  const output = Array.isArray(response?.output) ? response.output : [];\n  for (const item of output) {\n    const content = Array.isArray(item?.content) ? item.content : [];\n    for (const part of content) {\n      const text = textFrom(part?.text || part?.output_text || part?.content).trim();\n      if (text) return text;\n    }\n  }\n\n  if (Array.isArray(response)) {\n    for (const item of response) {\n      const text = extractOutputText(item);\n      if (text) return text;\n    }\n  }\n\n  return '';\n}\n\nfunction parseJsonSafe(rawText) {\n  const clean = String(rawText || '')\n    .trim()\n    .replace(/^\\x60\\x60\\x60(?:json)?\\s*/i, '')\n    .replace(/\\x60\\x60\\x60$/i, '')\n    .trim();\n  if (!clean) return null;\n  try {\n    return JSON.parse(clean);\n  } catch (firstError) {\n    const match = clean.match(/\\{[\\s\\S]*\\}/);\n    if (!match) throw firstError;\n    return JSON.parse(match[0]);\n  }\n}\n\nfunction fallbackUnderstanding() {\n  return {\n    intent: 'other',\n    language: 'fr',\n    sentiment: 'neutral',\n    product_id: 'default_product',\n    product_name: '',\n    order_name: ctx.orderName || '',\n    customer_email_in_message: '',\n    summary_fr: 'Analyse IA indisponible ou non parseable.',\n    requested_action_fr: 'Verification manuelle necessaire.',\n    needs_order_lookup: Boolean(ctx.customerEmail || ctx.orderName),\n    needs_human_review: true,\n    confidence: 0,\n    recommended_template_id: 'generic_clarification',\n    should_create_draft: true,\n    skip_draft_reason: ''\n  };\n}\n\nfunction normalize(value) {\n  return String(value || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\n}\n\nfunction unique(values) {\n  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];\n}\n\nfunction hasAny(blob, patterns) {\n  return patterns.some((pattern) => pattern.test(blob));\n}\n\nlet aiUnderstanding = fallbackUnderstanding();\nconst aiUnderstandingText = extractOutputText(raw);\n\ntry {\n  const parsed = parseJsonSafe(aiUnderstandingText);\n  if (parsed) aiUnderstanding = parsed;\n} catch (error) {\n  aiUnderstanding.parse_error = error.message;\n}\n\nconst products = Array.isArray(ctx.products) ? ctx.products : [];\nconst templates = ctx.supportTemplates || {};\nconst defaultProduct = products.find((product) => product.id === 'default_product') || null;\nconst requestedProductId = String(aiUnderstanding.product_id || '').trim();\nconst latestCustomerText = String(ctx.latestCustomerMessage || ctx.customerMessage || '').trim();\nconst latestCustomerBlob = normalize(latestCustomerText);\nconst subjectBlob = normalize(ctx.originalSubject || '');\nconst latestHasBody = latestCustomerBlob.length >= 12;\nconst messageBlob = normalize([\n  latestCustomerText,\n  !latestHasBody ? ctx.originalSubject || '' : '',\n  aiUnderstanding.product_name || '',\n  requestedProductId\n].join(' '));\n\nlet selectedProduct =\n  products.find((product) => product.id === requestedProductId && requestedProductId !== 'default_product') ||\n  products.find((product) => product.id !== 'default_product' && (product.aliases || []).some((alias) => messageBlob.includes(normalize(alias)))) ||\n  defaultProduct ||\n  null;\n\nconst nonClientIntentSet = new Set(['partnership_request', 'marketing_or_sales', 'automated_notification', 'not_customer_request']);\nconst nonClientPatternBlob = normalize([\n  ctx.fromRaw || '',\n  ctx.originalFromEmail || '',\n  ctx.originalSubject || '',\n  latestCustomerText\n].join(' '));\nconst deterministicNonClientPatterns = [\n  /\\b(partenariat|collaboration|influenceur|influenceuse|affiliation|sponsoring|sponsorise|ambassadeur|ambassadrice)\\b/,\n  /\\b(agence\\s+(marketing|seo)|seo|backlink|guest\\s*post|article sponsorise|publicite|prospection|lead generation)\\b/,\n  /\\b(newsletter|unsubscribe|desabonner|desinscription|mailing list)\\b/,\n  /\\b(no-?reply|noreply|do-?not-?reply|mailer-daemon|notification automatique|automated notification|message automatique)\\b/,\n  /\\b(echec de remise|non livraison|non delivrance|adresse inconnue|boite mail pleine|mail delivery|delivery status notification)\\b/,\n  /\\b(enquete bancaire|litige bancaire|chargeback|contestation bancaire|a ouvert une enquete)\\b/,\n  /\\b(security alert|alerte securite|code de verification|verification code|mot de passe|password reset)\\b/,\n  /\\b(invoice|facture automatique|recu automatique|receipt|statement)\\b/\n];\nconst customerComplaintSignals = hasAny(latestCustomerBlob, [\n  /\\b(commande|colis|produit|article|genouillere|genouilleres|taille|rembours|retour|echange|recu|recue|livraison|guide)\\b/,\n  /#\\s*[0-9]{3,12}\\b/,\n  /\\b(arnaque|decu|decue|pas conforme|rien a voir|publicite facebook)\\b/\n]);\nconst deterministicNonClient = deterministicNonClientPatterns.some((pattern) => pattern.test(nonClientPatternBlob)) && !customerComplaintSignals;\n\nconst guidePatterns = [\n  /genou\\s+sans\\s+douleur/,\n  /\\b(guide|livret|manuel|notice|pdf)\\b.{0,100}\\b(recu|recue|recevoir|envoyer|renvoyer|transmettre|joint|piece jointe|manque|manquant|manquante|dematerialise|numerique|email|mail|gratuit|offert|commande|colis)\\b/,\n  /\\b(recu|recue|recevoir|envoyer|renvoyer|transmettre|joint|piece jointe|manque|manquant|manquante|dematerialise|numerique|email|mail|gratuit|offert|commande|colis)\\b.{0,100}\\b(guide|livret|manuel|notice|pdf)\\b/,\n  /\\b(livre|ebook|e-book|document)\\s+(gratuit|offert|guide|pdf)\\b/,\n  /\\b(livre|ebook|e-book|document)\\b.{0,80}\\b(soulager|douleur|genoux?)\\b/\n];\nconst guideDesTaillesOnly = /\\bguide\\s+(de|des)\\s+tailles?\\b/.test(latestCustomerBlob) && !/genou\\s+sans\\s+douleur|piece jointe|pdf|livret|manuel|notice|dematerialise|numerique/.test(latestCustomerBlob);\nconst explicitGuideRequest = !guideDesTaillesOnly && (hasAny(latestCustomerBlob, guidePatterns) || (!latestHasBody && hasAny(subjectBlob, guidePatterns)));\nconst deliveryRequest = hasAny(latestCustomerBlob, [\n  /\\b(ou est|suivi|suivre|tracking|retard|acheminement|date de livraison|delai|delais)\\b/,\n  /\\b(mon|ma|mes|votre|notre)\\s+(colis|commande)\\b.*\\b(arrive|arrivera|livre|livree|recu|recue|suivi|retard|bloque|perdu)\\b/,\n  /\\blivraison\\b.*\\b(retard|probleme|souci|quand|date|delai|delais|pas|non|jamais)\\b/,\n  /\\b(retard|probleme|souci|quand|date|delai|delais|pas|non|jamais)\\b.*\\blivraison\\b/,\n  /\\b(pas|jamais|toujours pas|non)\\s+(recu|recue|receptionne|livre|livree)\\b.*\\b(colis|commande|article|produit|genouillere)\\b/,\n  /\\b(colis|commande|article|produit|genouillere)\\b.*\\b(pas|jamais|toujours pas|non)\\s+(recu|recue|receptionne|livre|livree)\\b/,\n  /\\brien\\s+(recu|recue|receptionne)\\b/,\n  /\\bquand\\b.*\\b(arrive|arrivera|recevrai|recevoir)\\b/\n]);\nconst deliveredDisplayIssue = hasAny(latestCustomerBlob, [\n  /\\b(suivi|commande|transporteur|statut|site|tracking)\\b.*\\b(indique|marque|affiche|dit|met|note)\\b.*\\b(livre|livree|livraison effectuee)\\b/,\n  /\\b(livre|livree|livraison effectuee)\\b.*\\b(pas|jamais|rien|toujours pas|non)\\b.*\\b(recu|recue|receptionne)\\b/,\n  /\\b(pas|jamais|rien|toujours pas|non)\\b.*\\b(recu|recue|receptionne)\\b.*\\b(livre|livree|livraison effectuee)\\b/\n]);\nconst refundRequest = hasAny(latestCustomerBlob, [/\\b(rembours|refund|argent|remboursement)\\b/]);\nconst cancelRequest = hasAny(latestCustomerBlob, [/\\b(annul|annulation|cancel)\\b/]);\nconst returnAddressContext = hasAny(latestCustomerBlob, [\n  /\\badresse\\s+(de|du|pour)\\s+(retour|renvoi|renvoyer|retourner)\\b/,\n  /\\b(a quelle adresse|quelle adresse)\\b.*\\b(retour|renvoi|renvoyer|retourner)\\b/,\n  /\\b(retour|renvoi|renvoyer|retourner)\\b.*\\badresse\\b/\n]);\nconst addressRequest = !returnAddressContext && hasAny(latestCustomerBlob, [\n  /\\b(mauvaise|bonne|nouvelle|ancienne)\\s+adresse\\b/,\n  /\\badresse\\s+de\\s+livraison\\b.*\\b(changer|modifier|corriger|rectifier|mettre a jour|remplacer)\\b/,\n  /\\b(changer|modifier|corriger|rectifier|mettre a jour|remplacer)\\b.*\\badresse\\b/,\n  /\\badresse\\b.*\\b(changer|modifier|corriger|rectifier|mettre a jour|remplacer)\\b/,\n  /\\b(trompe|trompee|erreur)\\b.*\\badresse\\b/\n]);\nconst addressLines = latestCustomerText.split(/\\n+/).map((line) => line.trim()).filter(Boolean);\nconst addressProvided = addressRequest && (\n  /\\b\\d{1,5}\\s+(?:rue|avenue|av|boulevard|bd|chemin|route|impasse|allee|all?e|place|residence|r?sidence|batiment|b?timent|bt|appartement|appt)\\b/i.test(latestCustomerText) ||\n  /\\b\\d{5}\\s+[a-z][a-z .'-]{2,}\\b/i.test(latestCustomerText) ||\n  (addressLines.length >= 3 && /\\b\\d{5}\\b/.test(latestCustomerText))\n);\nconst missingProductRequest = hasAny(latestCustomerBlob, [\n  /\\b(il me manque|manque|manquant|manquante|incomplet|incomplete|recu seulement|recu une seule|une seule|pas recu|pas recue)\\b.*\\b(genouillere|paire|article|produit|colis)\\b/,\n  /\\b(genouillere|paire|article|produit|colis)\\b.*\\b(il me manque|manque|manquant|manquante|incomplet|incomplete|une seule|pas recu|pas recue)\\b/,\n  /\\b(recu|recue|receptionne)\\b.*\\b(une seule|1 seule|un seul|1 seul)\\b.*\\b(genouillere|article|produit)\\b/\n]);\nconst damagedProductRequest = hasAny(latestCustomerBlob, [\n  /\\b(abime|abimee|cass[e?]|cassee|defectueux|defectueuse|endommage|endommagee|dechire|dechiree|ne fonctionne pas|inutilisable)\\b/,\n  /\\b(produit|article|genouillere|colis)\\b.*\\b(abime|abimee|cass[e?]|cassee|defectueux|defectueuse|endommage|endommagee|dechire|dechiree)\\b/\n]);\nconst returnRequest = hasAny(latestCustomerBlob, [/\\b(procedure de retour|faire un retour|retour produit|conditions de retour)\\b/, /\\b(retourner|renvoyer)\\b.*\\b(article|produit|commande|colis|genouillere)\\b/]);\nconst sizeRequest = hasAny(latestCustomerBlob, [\n  /\\b(taille|tailles|trop petit|trop petite|trop grand|trop grande|serre|serree|serre trop|convient pas|ne va pas)\\b/,\n  /\\b(echange|echanger|changer|modifier)\\b.*\\b(taille|pointure|dimension|genouillere|article)\\b/,\n  /\\b(taille|pointure|dimension)\\b.*\\b(echange|echanger|changer|modifier)\\b/\n]);\nconst sizeAfterReceipt = sizeRequest && hasAny(latestCustomerBlob, [/\\b(recu|recue|reception|livre|livree|colis|arrive|arrivee)\\b/]);\nconst desiredSizeMention = hasAny(latestCustomerBlob, [\n  /\\btaille\\s*(xs|s|m|l|xl|xxl|xxxl|[0-9]{1,2})\\b/,\n  /\\ben\\s+(xs|s|m|l|xl|xxl|xxxl)\\b/,\n  /\\b(plus grande|plus petite|taille au dessus|taille en dessous)\\b/\n]);\nconst sizeAdviceRequest = hasAny(latestCustomerBlob, [\n  /\\b(tour de genou|tour du genou|mesure|mesurer|centimetre|centimetres|cm)\\b.*\\b(taille|choisir|prendre|conseille|adaptee)\\b/,\n  /\\b(taille|choisir|prendre|conseille|adaptee)\\b.*\\b(tour de genou|tour du genou|mesure|centimetre|centimetres|cm)\\b/,\n  /\\b(quelle taille|taille choisir|choisir quelle taille|quelle est la taille)\\b/,\n  /\\b(taille au dessus|taille superieure|plus grande)\\b.*\\b(adaptee|mieux|aurait ete|aurait ?t?)\\b/\n]);\nconst rollingFitIssue = hasAny(latestCustomerBlob, [\n  /\\b(roule|s[?' ]?enroule|enroule|glisse|glisser|tient pas|ne tient pas|descend|descendre)\\b/,\n  /\\b(genouillere|genouilleres)\\b.*\\b(roule|enroule|glisse|tient pas|descend)\\b/,\n  /\\b(roule|enroule|glisse|tient pas|descend)\\b.*\\b(genouillere|genouilleres)\\b/\n]);\nconst explicitSizeAction = hasAny(latestCustomerBlob, [\n  /\\b(echange|echanger|changer|modifier|renvoyer|retourner|retour|envoyer|renvoi)\\b.*\\b(taille|genouillere|article|produit)\\b/,\n  /\\b(taille|genouillere|article|produit)\\b.*\\b(echange|echanger|changer|modifier|renvoyer|retourner|retour|envoyer|renvoi)\\b/,\n  /\\b(je veux|je souhaite|pouvez vous|pourriez vous)\\b.*\\b(taille au dessus|taille superieure|plus grande|plus petite)\\b/\n]);\nconst shippingDestinationQuestion = hasAny(latestCustomerBlob, [\n  /\\b(livrez|livrer|livraison|expediez|expedier|expedition)\\b.*\\b(luxembourg|belgique|suisse|royaume uni|angleterre|uk|international|monde entier|etranger)\\b/,\n  /\\b(luxembourg|belgique|suisse|royaume uni|angleterre|uk|international|monde entier|etranger)\\b.*\\b(livrez|livrer|livraison|expediez|expedier|expedition)\\b/\n]);\nconst orderConfirmationRequest = hasAny(latestCustomerBlob, [\n  /\\bcommande\\b.*\\b(bien prise en compte|prise en compte|confirmee|validee|enregistree|passee|recue)\\b/,\n  /\\b(paiement|validation)\\b.*\\b(application|bug|sorti|ferme|quitte|interrompu)\\b/,\n  /\\b(j ai du sortir|je suis sorti|j ai quitte|application)\\b.*\\b(paiement|commande|validation)\\b/\n]);\nconst offerIssue = hasAny(latestCustomerBlob, [\n  /\\boffre\\b.*\\b(1|2|une|deux|genouillere|genouilleres|lot|pack|promotion|promo)\\b/,\n  /\\b(1|2|une|deux|lot|pack|promotion|promo)\\b.*\\boffre\\b/,\n  /\\b(achetee|achete|acheter)\\b.*\\b(gratuite|offerte|offert)\\b/,\n  /\\bfrais de livraison gratuit/\n]);\nconst logoIssue = hasAny(latestCustomerBlob, [/\\b(pas de|aucun|absence de|sans)\\s+(logo|marquage|etiquette)\\b/, /\\b(logo|marquage|etiquette)\\b.*\\b(absent|absente|manque|pas|aucun|authenticite|authentique|contrefacon|vrai|faux)\\b/, /\\b(authenticite|authentique|contrefacon|vrai produit|faux produit)\\b/]);\nconst productInfoRequest = hasAny(latestCustomerBlob, [/\\b(comment utiliser|utilisation|porter|lavage|entretien|composition|douleur|genou|bambou|paypal|paiement)\\b/]);\n\nconst detectedTemplateIds = [];\nfunction addTemplate(id) {\n  if (templates[id] && !detectedTemplateIds.includes(id)) detectedTemplateIds.push(id);\n}\n\nif (cancelRequest) addTemplate('annulation');\nif (addressRequest) addTemplate(addressProvided ? 'adresse' : 'adresse_incomplete');\nif (refundRequest) addTemplate('remboursement');\nif (deliveredDisplayIssue) addTemplate('livraison_affichage_livre');\nif (missingProductRequest) addTemplate('genouillere_manquante');\nif (damagedProductRequest && !missingProductRequest) addTemplate('produit_abime');\nif (rollingFitIssue) addTemplate('genouillere_roule');\nif (sizeRequest || sizeAdviceRequest) {\n  if (refundRequest) addTemplate('remboursement');\n  else if (returnRequest) addTemplate('retour_details');\n  else if (rollingFitIssue && !explicitSizeAction) {\n    // Le template genouillere_roule couvre deja le conseil et la proposition de taille au-dessus.\n  } else if (sizeAdviceRequest && !explicitSizeAction && !sizeAfterReceipt) addTemplate('conseil_taille');\n  else addTemplate(sizeAfterReceipt || explicitSizeAction ? 'retour_taille' : (desiredSizeMention ? 'taille_confirmee' : 'taille_incomplete'));\n}\nif (explicitGuideRequest) addTemplate('guide');\nif (shippingDestinationQuestion) addTemplate('livraison_internationale');\nif (orderConfirmationRequest) addTemplate('commande_confirmation');\nif (deliveryRequest) addTemplate('livraison');\nif (returnRequest && !detectedTemplateIds.includes('retour_taille') && !detectedTemplateIds.includes('genouillere_manquante') && !detectedTemplateIds.includes('produit_abime')) addTemplate('retour_details');\nif (offerIssue && !missingProductRequest) addTemplate('offre');\nif (logoIssue) addTemplate('logo');\nif (productInfoRequest && !explicitGuideRequest && !rollingFitIssue && !sizeRequest && !sizeAdviceRequest && !shippingDestinationQuestion && !orderConfirmationRequest) addTemplate('product_info_generic');\n\nconst intent = aiUnderstanding.intent || 'other';\nlet writerFamily = 'autre';\nif (['tracking_request', 'late_order', 'delivery_information', 'delivered_not_received'].includes(intent)) writerFamily = 'livraison';\nif (['refund_request', 'exchange_return_request', 'cancel_order', 'address_change', 'damaged_or_missing', 'angry_complaint'].includes(intent)) writerFamily = 'remboursement';\n\nconst fallbackTemplateByIntent = {\n  tracking_request: 'livraison',\n  late_order: 'livraison',\n  delivery_information: 'livraison',\n  refund_request: 'remboursement',\n  exchange_return_request: 'retour_details',\n  cancel_order: 'annulation',\n  address_change: addressProvided ? 'adresse' : 'adresse_incomplete',\n  delivered_not_received: 'livraison_affichage_livre',\n  damaged_or_missing: missingProductRequest ? 'genouillere_manquante' : (damagedProductRequest ? 'produit_abime' : 'remboursement'),\n  angry_complaint: writerFamily === 'livraison' ? 'livraison' : 'generic_clarification',\n  product_information: rollingFitIssue ? 'genouillere_roule' : (sizeAdviceRequest ? 'conseil_taille' : (shippingDestinationQuestion ? 'livraison_internationale' : (orderConfirmationRequest ? 'commande_confirmation' : 'product_info_generic'))),\n  partnership_request: 'generic_clarification',\n  marketing_or_sales: 'generic_clarification',\n  automated_notification: 'generic_clarification',\n  not_customer_request: 'generic_clarification',\n  other: 'generic_clarification'\n};\n\nconst aiRecommendedTemplateId = String(aiUnderstanding.recommended_template_id || '').trim();\nlet recommendedTemplateId = aiRecommendedTemplateId;\nif (aiRecommendedTemplateId === 'taille_incomplete' && (desiredSizeMention || explicitSizeAction || sizeAfterReceipt)) {\n  recommendedTemplateId = sizeAfterReceipt || explicitSizeAction ? 'retour_taille' : 'taille_confirmee';\n}\nconst aiRecommendationAllowed = templates[recommendedTemplateId] && recommendedTemplateId !== 'generic_clarification' && (recommendedTemplateId !== 'guide' || explicitGuideRequest);\nif ((deliveredDisplayIssue || intent === 'delivered_not_received') && templates.livraison_affichage_livre) {\n  recommendedTemplateId = 'livraison_affichage_livre';\n} else if (refundRequest && templates.remboursement) {\n  recommendedTemplateId = 'remboursement';\n} else if (returnRequest && templates.retour_details) {\n  recommendedTemplateId = 'retour_details';\n} else if (missingProductRequest && templates.genouillere_manquante) {\n  recommendedTemplateId = 'genouillere_manquante';\n} else if (damagedProductRequest && templates.produit_abime) {\n  recommendedTemplateId = 'produit_abime';\n} else if (rollingFitIssue && templates.genouillere_roule) {\n  recommendedTemplateId = 'genouillere_roule';\n} else if (sizeAdviceRequest && templates.conseil_taille) {\n  recommendedTemplateId = 'conseil_taille';\n} else if (shippingDestinationQuestion && templates.livraison_internationale) {\n  recommendedTemplateId = 'livraison_internationale';\n} else if (orderConfirmationRequest && templates.commande_confirmation) {\n  recommendedTemplateId = 'commande_confirmation';\n} else if (aiRecommendationAllowed) {\n  // Keep the possibly corrected recommendedTemplateId, not the raw AI value.\n} else if (detectedTemplateIds.length) {\n  recommendedTemplateId = detectedTemplateIds[0];\n} else {\n  if (!templates[recommendedTemplateId]) recommendedTemplateId = fallbackTemplateByIntent[intent] || 'generic_clarification';\n  if (recommendedTemplateId === 'guide' && !explicitGuideRequest) recommendedTemplateId = fallbackTemplateByIntent[intent] || 'generic_clarification';\n  if (!templates[recommendedTemplateId]) recommendedTemplateId = Object.keys(templates)[0] || '';\n}\n\nlet selectedTemplateIds = unique([recommendedTemplateId, ...detectedTemplateIds]).filter((id) => templates[id]);\nif (selectedTemplateIds.includes('livraison_affichage_livre')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => id !== 'livraison');\n}\nif (selectedTemplateIds.includes('remboursement') || selectedTemplateIds.includes('retour_details')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['retour_taille', 'taille_incomplete', 'taille_confirmee', 'conseil_taille'].includes(id));\n}\nif (selectedTemplateIds.includes('retour_taille')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => id !== 'taille_incomplete');\n}\nif (selectedTemplateIds.includes('taille_confirmee')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => id !== 'taille_incomplete');\n}\nif (selectedTemplateIds.includes('genouillere_roule')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['product_info_generic', 'conseil_taille', 'taille_incomplete', 'taille_confirmee'].includes(id));\n}\nif (selectedTemplateIds.includes('conseil_taille')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['product_info_generic', 'taille_incomplete', 'taille_confirmee'].includes(id));\n}\nif (selectedTemplateIds.includes('livraison_internationale')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['product_info_generic', 'livraison'].includes(id));\n}\nif (selectedTemplateIds.includes('commande_confirmation')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['product_info_generic', 'livraison'].includes(id));\n}\nif (selectedTemplateIds.includes('genouillere_manquante')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['retour_details', 'offre', 'produit_abime'].includes(id));\n}\nif (selectedTemplateIds.includes('produit_abime')) {\n  selectedTemplateIds = selectedTemplateIds.filter((id) => !['retour_details', 'remboursement'].includes(id));\n}\nconst selectedTemplates = selectedTemplateIds.map((id) => templates[id]).filter(Boolean);\nconst recommendedTemplate = recommendedTemplateId ? templates[recommendedTemplateId] : null;\n\nconst selectedFamilies = selectedTemplates.map((template) => template.family);\nif (selectedFamilies.includes('remboursement')) writerFamily = 'remboursement';\nelse if (selectedFamilies.includes('livraison')) writerFamily = 'livraison';\nelse if (selectedFamilies.includes('autre')) writerFamily = 'autre';\n\nconst shouldCreateDraft = selectedTemplateIds.length > 0 && !deterministicNonClient\n  ? true\n  : aiUnderstanding.should_create_draft !== false && !nonClientIntentSet.has(intent) && !deterministicNonClient;\nconst skipDraftReason = shouldCreateDraft\n  ? ''\n  : String(aiUnderstanding.skip_draft_reason || (deterministicNonClient ? 'Signal non-client detecte automatiquement.' : 'Email classe non-client par le triage IA.')).trim();\n\nconst aiOrderName = String(aiUnderstanding.order_name || '').trim();\nconst aiEmail = String(aiUnderstanding.customer_email_in_message || '').trim().toLowerCase();\nconst templateNeedsHumanReview = selectedTemplates.some((template) => template.needsHumanReview || template.requiresAttachment);\nconst requestLabels = selectedTemplates.map((template) => template.description || template.id).filter(Boolean);\n\nreturn [\n  {\n    json: {\n      ...ctx,\n      aiUnderstandingRaw: raw,\n      aiUnderstandingText,\n      aiUnderstanding,\n      selectedProduct,\n      selectedProductId: selectedProduct?.id || requestedProductId || 'default_product',\n      selectedProductName: selectedProduct?.name || aiUnderstanding.product_name || '',\n      requestIntent: intent,\n      requestIntentLabel: requestLabels.length > 1 ? requestLabels.join(' + ') : (aiUnderstanding.requested_action_fr || intent || 'Demande client'),\n      writerFamily,\n      recommendedTemplateId,\n      recommendedTemplate,\n      selectedTemplateIds,\n      selectedTemplates,\n      additionalTemplateIds: selectedTemplateIds.slice(1),\n      detectedTemplateIds,\n      multiRequestDetected: selectedTemplateIds.length > 1,\n      latestCustomerMessageForTriage: latestCustomerText,\n      deterministicRequestSignals: {\n        explicitGuideRequest,\n        deliveryRequest,\n        refundRequest,\n        missingProductRequest,\n        damagedProductRequest,\n        deliveredDisplayIssue,\n        cancelRequest,\n        returnRequest,\n        addressRequest,\n        addressProvided,\n        sizeRequest,\n        sizeAfterReceipt,\n        desiredSizeMention,\n        sizeAdviceRequest,\n        rollingFitIssue,\n        explicitSizeAction,\n        shippingDestinationQuestion,\n        orderConfirmationRequest,\n        offerIssue,\n        logoIssue,\n        productInfoRequest\n      },\n      templateNeedsHumanReview,\n      shouldCreateDraft,\n      skipDraft: !shouldCreateDraft,\n      skipDraftReason,\n      nonClientDetectedByRules: deterministicNonClient,\n      explicitGuideRequest,\n      needsOrderLookup: shouldCreateDraft && aiUnderstanding.needs_order_lookup !== false,\n      needsHumanReview: shouldCreateDraft && (aiUnderstanding.needs_human_review !== false || ctx.replyAddressAmbiguous === true || templateNeedsHumanReview),\n      customerEmail: ctx.customerEmail || aiEmail,\n      orderName: aiOrderName || ctx.orderName || ''\n    }\n  }\n];"
+      },
+      "id": "e81dbeac-13aa-4755-a89d-7fda3a93a914",
+      "name": "Parse AI Understanding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Prepare 17TRACK').first().json;\nconst trackRaw = $input.first().json || {};\n\nfunction hasMeaningful17TrackData(response) {\n  if (!response || typeof response !== 'object') return false;\n  if (response.error || response.errorMessage || response.message?.error) return false;\n  const serialized = JSON.stringify(response).toLowerCase();\n  if (/unauthorized|forbidden|invalid token|invalid api|missing token|api key|quota|rate limit/.test(serialized)) return false;\n  return Boolean(\n    response.data ||\n    response.track_info ||\n    response.trackInfo ||\n    response.accepted ||\n    response.rejected ||\n    response.event ||\n    response.events\n  );\n}\n\nconst trackingLookupAvailable = hasMeaningful17TrackData(trackRaw);\nconst trackingFallbackEtaText = \"courant de la semaine / début de semaine prochaine / fin de semaine prochaine\";\nconst trackingLookupStatus = trackingLookupAvailable\n  ? '17track_data_available'\n  : (data.trackingNumber ? '17track_unavailable_use_broad_eta_draft' : 'no_tracking_number_use_broad_eta_draft');\n\nfunction compactOrder(order) {\n  if (!order) return null;\n  return {\n    name: order.name || '',\n    email: order.email || '',\n    createdAt: order.createdAt || '',\n    processedAt: order.processedAt || '',\n    financialStatus: order.displayFinancialStatus || '',\n    fulfillmentStatus: order.displayFulfillmentStatus || '',\n    customerFirstName: order.customer?.firstName || '',\n    fulfillments: (order.fulfillments || []).map((fulfillment) => ({\n      status: fulfillment.status || '',\n      displayStatus: fulfillment.displayStatus || '',\n      createdAt: fulfillment.createdAt || '',\n      updatedAt: fulfillment.updatedAt || '',\n      estimatedDeliveryAt: fulfillment.estimatedDeliveryAt || '',\n      deliveredAt: fulfillment.deliveredAt || '',\n      inTransitAt: fulfillment.inTransitAt || '',\n      trackingInfo: (fulfillment.trackingInfo || []).map((info) => ({\n        company: info.company || '',\n        numberPresent: Boolean(info.number),\n        urlPresent: Boolean(info.url)\n      }))\n    }))\n  };\n}\n\nconst schema = {\n  type: 'object',\n  additionalProperties: false,\n  properties: {\n    reply_subject: { type: 'string' },\n    reply_body: { type: 'string' },\n    internal_summary: { type: 'string' },\n    needs_human_review: { type: 'boolean' },\n    confidence: { type: 'number' },\n    template_id_used: { type: 'string' }\n  },\n  required: ['reply_subject', 'reply_body', 'internal_summary', 'needs_human_review', 'confidence', 'template_id_used']\n};\n\nconst supportTemplates = data.supportTemplates || {};\nconst selectedTemplateIds = Array.isArray(data.selectedTemplateIds) && data.selectedTemplateIds.length ? data.selectedTemplateIds : [data.recommendedTemplateId].filter(Boolean);\nconst selectedTemplates = selectedTemplateIds.map((id) => supportTemplates[id]).filter(Boolean);\nconst selectedTemplate = data.recommendedTemplate || selectedTemplates[0] || supportTemplates[data.recommendedTemplateId] || null;\nconst templatesToUse = selectedTemplates.length ? selectedTemplates : [selectedTemplate].filter(Boolean);\n\nfunction getSentMailLearningExamples() {\n  let memory = [];\n  try {\n    const staticData = $getWorkflowStaticData('global');\n    memory = Array.isArray(staticData.lineaParisSentMailLearning) ? staticData.lineaParisSentMailLearning : [];\n  } catch {\n    memory = [];\n  }\n  const wantedTemplateIds = new Set(templatesToUse.map((template) => String(template?.id || '').trim()).filter(Boolean));\n  const wantedFamilies = new Set(templatesToUse.map((template) => String(template?.family || '').trim()).filter(Boolean));\n  const scored = memory\n    .filter((item) => item && Array.isArray(item.paragraphs) && item.paragraphs.length)\n    .map((item) => {\n      const templateMatch = wantedTemplateIds.has(String(item.templateId || '').trim()) ? 2 : 0;\n      const familyMatch = wantedFamilies.has(String(item.family || '').trim()) ? 1 : 0;\n      return { item, score: templateMatch + familyMatch };\n    })\n    .filter((entry) => entry.score > 0)\n    .sort((a, b) => {\n      if (b.score !== a.score) return b.score - a.score;\n      return Date.parse(b.item.sentAt || 0) - Date.parse(a.item.sentAt || 0);\n    })\n    .slice(0, 6)\n    .map((entry) => ({\n      templateId: entry.item.templateId || '',\n      family: entry.item.family || '',\n      subjectShape: entry.item.subjectShape || '',\n      paragraphs: entry.item.paragraphs.slice(0, 5),\n      source: entry.item.source || 'gmail_sent_after_manual_review'\n    }));\n  return scored;\n}\n\nconst sentMailLearningExamples = getSentMailLearningExamples();\n\nconst baseRules = [\n  'Tu es un Agent IA de redaction SAV e-commerce professionnel.',\n  'Tu rediges un brouillon email en francais, pret a etre relu par un humain.',\n  'Utilise la configuration marque + produit fournie.',\n  'Les templates historiques sont des exemples de fond et des garde-fous. Tu ne vois que leur coeur utile, pas un mail complet: reconstruis une vraie reponse naturelle selon le dernier message client.',\n  'Si plusieurs templates sont fournis dans templatesToUse, reponds a toutes les demandes du dernier message, dans un seul mail clair. Ne choisis pas une seule demande en ignorant les autres.',\n  'Ne reponds jamais a une demande detectee uniquement dans threadHistory ou rawCurrentEmail. Ces champs servent seulement de contexte.',\n  'Evite les phrases repetitives entre dossiers. Pour les cas sensibles, garde seulement les faits obligatoires et l intention: prise en compte, action prevue, information manquante si necessaire.',\n  'Pour le template guide, ne dis jamais que nous allons verifier. Dis que le guide est dematerialise et non ajoute physiquement au colis, qu il a deja ete envoye par email apres la commande, puis qu il est remis en piece jointe a cet email. Le brouillon sera relu et le PDF sera ajoute manuellement avant envoi.',\n  'Respecte le style de marque: ouverture, cloture, signature, ton, longueur. Le mail doit etre amical, naturel, chaleureux, et jamais robotique. Il doit donner l impression qu une personne a lu précisément le message du client.',\n  'Base-toi sur le dernier message client. Utilise l historique seulement pour comprendre le contexte. Reprends le vocabulaire utile du client quand cela rend la reponse plus naturelle, sans citer de donnees inutiles.',\n  'Ignore les emails automatiques ou resumes de commande comme demandes client.',\n  'Tu dois utiliser les informations Shopify et tracking fournies, sans inventer. Si 17TRACK est indisponible, absent ou non configure, le workflow doit quand meme rediger un brouillon livraison avec la plage large fournie dans tracking.fallbackEtaText.',\n  'Ne dis jamais dropshipping, fournisseur, Chine, chinois, pays d expedition, entrepot, AliExpress, usine, ou origine du colis.',\n  'Ne mens pas. Si une information manque vraiment, reste prudent. Mais quand la demande client est claire, ne reponds pas par une formule vague de verification: valide la demande et utilise le template adapte. Ne demande pas de photo ni de numero de commande par defaut; l humain relit et ajuste le brouillon.',\n  'Pour remboursement et retour_details chez Linéa Paris: ne donne jamais de procedure de retour. Dis que le remboursement de la commande a ete effectue, que le delai bancaire est generalement de 5 a 10 jours ouvres, que le client recevra un email de confirmation, et qu il n a pas besoin de retourner la commande.',\n  'Ne donne pas de date exacte sauf si elle est explicitement disponible dans les donnees.',\n  'Ce workflow cree uniquement un brouillon relu par un humain: quand un template prevoit une action, tu peux valider la demande dans le brouillon car l humain passe derriere. Pour un cas non couvert, reste prudent mais evite les reponses generiques de type nous allons verifier si la demande est comprehensible.',\n  'Ne donne pas le numero de tracking ni le lien de suivi sauf si le client le demande explicitement.',\n  'Si sentMailLearning.examples contient des mails corriges/envoyes recemment par l humain, donne-leur plus de poids que le template brut pour le style final. Ne copie jamais de donnees personnelles ni un ancien sujet exact; garde seulement le ton, la structure et les formulations generales.',\n  'Mise en forme obligatoire du reply_body: Bonjour, avec une virgule, seul sur une ligne, une ligne vide, Merci pour votre message. Ensuite 2 a 5 petits paragraphes adaptes au cas precis. Ne repete pas mecaniquement prise en compte + necessaire si une phrase plus naturelle suffit.',\n  'Objet obligatoire: reply_subject doit toujours commencer par \"Lin\\u00e9a Paris : \".',\n  'Apres les deux-points, ecris un objet court qui resume la demande reelle du dernier client. Ne recopie pas un ancien objet si celui-ci est vague ou automatique.',\n  'Objets interdits: Merci pour votre message, Votre demande, Demande client, Reponse a votre message, Support client.',\n  'Exemples d objets corrects: Lin\\u00e9a Paris : Suivi de votre commande, Lin\\u00e9a Paris : Remboursement de votre commande, Lin\\u00e9a Paris : Guide Genou sans douleur, Lin\\u00e9a Paris : Modification d adresse, Lin\\u00e9a Paris : Genouillere manquante, Lin\\u00e9a Paris : Presentation de vos genouilleres.',\n  'Retourne UNIQUEMENT un JSON valide. Aucun markdown, aucun commentaire, aucun texte hors JSON.'\n].join('\\n');\n\nconst familyRules = {\n  livraison: [\n    'Writer specialise livraison.',\n    'Le template livraison sert d exemple de ton et de niveau de prudence. Ne le recopie pas automatiquement: adapte la reponse au message exact du client.',\n    'Reponds surtout sur l acheminement, le retard eventuel, et une estimation prudente, sans recopier les statuts techniques 17TRACK.',\n    'Si tu mentionnes un retard, tu peux ajouter une excuse courte et separee, facile a supprimer si ce n est pas vraiment un retard.',\n    \"Si le contexte justifie un retard, tu peux utiliser ou reformuler: Votre commande a subi un léger retard d’acheminement. Ne l ajoute pas si le message client demande seulement une information simple et que les donnees ne montrent pas de retard.\",\n    \"Pour l estimation, utilise une phrase naturelle autour de: courant de la semaine / début de semaine prochaine / fin de semaine prochaine, sans laisser entendre une date exacte.\",\n    \"Indique que la commande est en cours d acheminement seulement si c est coherent avec les donnees ou le fallback livraison.\",\n    'Ne donne pas trop de details logistiques.',\n    'Quand 17TRACK sera disponible, transforme les donnees brutes en phrase client simple: en cours d acheminement, suivi pas encore actualise, leger retard, livraison indiquee mais contestee, ou anomalie a verifier.',\n    'Ne donne jamais de localisation exacte, centre de tri, pays, plateforme, code transporteur ou evenement technique au client.'\n  ].join('\\n'),\n  remboursement: [\n    'Writer specialise demandes sensibles: remboursement, retour, annulation, adresse, colis livre non recu, produit abime.',\n    'Reste empathique et rassurant.',\n    'Pour remboursement et retour_details, applique la regle Linéa Paris: remboursement effectue, confirmation par email, delai bancaire 5 a 10 jours ouvres, aucun retour necessaire. Pour taille, genouillere_manquante ou produit_abime, tu peux confirmer que le necessaire a ete fait ou sera fait quand le template le demande, car le brouillon sera relu et l action effectuee par un humain avant envoi. Pour genouillere_manquante, ne demande jamais de photo ni de numero de commande. Ne parle pas d offre achetee/offerte ni de paire. Garde l idee: demande prise en compte + necessaire pour renvoyer la genouillere manquante, mais formule naturellement selon le client. Pour produit_abime, reste generique: demande prise en compte et necessaire pour regler la situation. Pour annulation ou adresse, reste prudent selon le template.',\n    'Si une garantie existe dans la configuration produit, tu peux la rappeler sans promettre automatiquement le remboursement.'\n  ].join('\\n'),\n  autre: [\n    'Writer specialise demandes generales et produit.',\n    'Utilise uniquement les faits produit fournis.',\n    'Si le client demande le guide numerique, garde les faits obligatoires du template guide: guide dematerialise, pas dans le colis, deja envoye par email apres la commande, remis en piece jointe a cet email. Tu peux reformuler naturellement tant que ces faits restent clairs. Ne dis cela que pour le template guide.',\n    'Si le template logo est present, explique clairement que l absence de logo cousu ou d etiquette visible est volontaire, que l etiquette pouvait gener le port, et que cela n impacte ni la qualite ni l efficacite. Mentionne les fibres de bambou seulement si utile.',\n    'Si le template genouillere_roule est present, donne le conseil de positionnement a environ 4 cm au-dessus du genou, puis propose la taille du dessus si le client le souhaite. Reste chaleureux et concret.'\n  ].join('\\n')\n};\n\nfunction templateCoreForPrompt(body) {\n  return String(body || '')\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/^Bonjour[\\s,!.]*\\n+/i, '')\n    .replace(/^Merci pour votre message\\.?\\n+/i, '')\n    .replace(/\\n*Nous restons disponibles[\\s\\S]*$/i, '')\n    .replace(/\\n*Cordialement,[\\s\\S]*$/i, '')\n    .trim();\n}\n\nfunction templateForPrompt(template) {\n  if (!template) return null;\n  return {\n    id: template.id,\n    family: template.family,\n    description: template.description,\n    source: template.source,\n    exampleCore: templateCoreForPrompt(template.body),\n    requiresAttachment: Boolean(template.requiresAttachment),\n    needsHumanReview: Boolean(template.needsHumanReview),\n    safeUsageNotes: template.safeUsageNotes || []\n  };\n}\n\nconst context = {\n  brand: {\n    name: data.brandName || data.brand?.name || '',\n    signature: data.supportSignature || data.brand?.signature || '',\n    styleGuide: data.brand?.styleGuide || {}\n  },\n  product: data.selectedProduct || null,\n  logisticsPolicy: data.logisticsPolicy || {},\n  template: selectedTemplate ? templateForPrompt(selectedTemplate) : null,\n  templatesToUse: templatesToUse.map(templateForPrompt).filter(Boolean),\n  sentMailLearning: {\n    enabled: true,\n    usage: 'Exemples issus des emails envoyes apres correction humaine. Utiliser comme preference de style, sans copier de donnees personnelles.',\n    examples: sentMailLearningExamples\n  },\n  multiRequestDetected: Boolean(data.multiRequestDetected),\n  detectedTemplateIds: data.detectedTemplateIds || selectedTemplateIds,\n  replyRouting: {\n    contactFormLikely: Boolean(data.contactFormLikely),\n    replyToSource: data.replyToSource || '',\n    replyAddressConfidence: data.replyAddressConfidence || '',\n    replyAddressAmbiguous: Boolean(data.replyAddressAmbiguous)\n  },\n  customer: {\n    email: data.customerEmail || '',\n    firstName: data.customerFirstName || '',\n    originalSubject: data.originalSubject || '',\n    latestMessage: data.latestCustomerMessage || data.customerMessage || '',\n    rawCurrentEmail: data.rawCustomerMessage || '',\n    threadHistory: data.threadHistoryText || '',\n    threadSignals: data.threadSignals || {}\n  },\n  aiUnderstanding: data.aiUnderstanding || {},\n  shopify: {\n    searched: Boolean(data.shouldLookupOrder),\n    searchQuery: data.shopifySearchQuery || '',\n    orderFound: Boolean(data.orderFound),\n    order: compactOrder(data.order)\n  },\n  tracking: {\n    trackingNumberAvailable: Boolean(data.trackingNumber),\n    trackingCompany: data.trackingCompany || '',\n    trackingUrlAvailable: Boolean(data.trackingUrl),\n    estimatedDeliveryAt: data.estimatedDeliveryAt || '',\n    lookupAvailable: trackingLookupAvailable,\n    lookupStatus: trackingLookupStatus,\n    fallbackEtaText: trackingFallbackEtaText,\n    fallbackInstruction: 'Si le tracking 17TRACK est indisponible, rediger quand meme un brouillon avec cette phrase large, que l humain ajustera apres verification.',\n    raw17Track: trackRaw\n  }\n};\n\nfunction makePrompt(family) {\n  return [\n    baseRules,\n    familyRules[family] || familyRules.autre,\n    'Template historique principal:',\n    JSON.stringify(context.template || {}, null, 2),\n    'Tous les templates a couvrir si plusieurs demandes sont detectees:',\n    JSON.stringify(context.templatesToUse || [], null, 2),\n    'Schema JSON attendu:',\n    JSON.stringify(schema, null, 2),\n    'Contexte JSON complet:',\n    JSON.stringify(context, null, 2)\n  ].join('\\n\\n');\n}\n\nconst openAiModel = $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini';\nfunction makeOpenAiBody(prompt, maxOutputTokens = 1400) {\n  return {\n    model: openAiModel,\n    input: prompt,\n    temperature: 0.45,\n    top_p: 0.9,\n    max_output_tokens: maxOutputTokens,\n    store: false\n  };\n}\n\nconst agentDraftPromptLivraison = makePrompt('livraison');\nconst agentDraftPromptRemboursement = makePrompt('remboursement');\nconst agentDraftPromptAutre = makePrompt('autre');\n\nreturn [\n  {\n    json: {\n      ...data,\n      trackRaw,\n      writerFamily: data.writerFamily || 'autre',\n      writerContext: context,\n      aiDraftSchema: schema,\n      selectedTemplate,\n      selectedTemplates: templatesToUse,\n      selectedTemplateIds: templatesToUse.map((template) => template.id),\n      selectedTemplateId: selectedTemplate?.id || data.recommendedTemplateId || '',\n      agentDraftPromptLivraison,\n      agentDraftPromptRemboursement,\n      agentDraftPromptAutre,\n      openAiDraftBodyLivraison: makeOpenAiBody(agentDraftPromptLivraison),\n      openAiDraftBodyRemboursement: makeOpenAiBody(agentDraftPromptRemboursement),\n      openAiDraftBodyAutre: makeOpenAiBody(agentDraftPromptAutre)\n    }\n  }\n];"
+      },
+      "id": "c3daf219-8132-4785-bfdb-1646b74deff1",
+      "name": "Prepare AI Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2280,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Prepare AI Draft').first().json;\nconst raw = $input.first().json;\n\nfunction textFrom(value) {\n  if (typeof value === 'string') return value;\n  if (value == null) return '';\n  if (typeof value === 'object') return JSON.stringify(value);\n  return String(value);\n}\n\nfunction extractOutputText(response) {\n  const directCandidates = [\n    response?.output_text,\n    typeof response?.output === 'string' ? response.output : '',\n    response?.text,\n    response?.message?.content,\n    response?.choices?.[0]?.message?.content,\n    response?.data?.[0]?.content?.[0]?.text,\n    response?.content?.[0]?.text,\n    response?.content?.[0]?.content,\n    response?.content,\n    response?.json,\n    response?.result,\n    response?.answer\n  ];\n  for (const candidate of directCandidates) {\n    const text = textFrom(candidate).trim();\n    if (text && text !== '{}' && text !== '[]') return text;\n  }\n\n  const output = Array.isArray(response?.output) ? response.output : [];\n  for (const item of output) {\n    const content = Array.isArray(item?.content) ? item.content : [];\n    for (const part of content) {\n      const text = textFrom(part?.text || part?.output_text || part?.content).trim();\n      if (text && text !== '{}' && text !== '[]') return text;\n    }\n  }\n\n  if (Array.isArray(response)) {\n    for (const item of response) {\n      const text = extractOutputText(item);\n      if (text) return text;\n    }\n  }\n\n  return '';\n}\n\nfunction parseJsonSafe(rawText) {\n  const clean = String(rawText || '')\n    .trim()\n    .replace(/^\\x60\\x60\\x60(?:json)?\\s*/i, '')\n    .replace(/\\x60\\x60\\x60$/i, '')\n    .trim();\n  if (!clean) return null;\n  try {\n    return JSON.parse(clean);\n  } catch (firstError) {\n    const match = clean.match(/\\{[\\s\\S]*\\}/);\n    if (!match) throw firstError;\n    return JSON.parse(match[0]);\n  }\n}\n\nfunction normalize(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .toLowerCase();\n}\n\nfunction unique(values) {\n  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];\n}\n\nconst supportTemplates = data.supportTemplates || {};\nconst selectedTemplateIds = unique(Array.isArray(data.selectedTemplateIds) && data.selectedTemplateIds.length\n  ? data.selectedTemplateIds\n  : [data.selectedTemplateId, data.recommendedTemplateId, data.recommendedTemplate?.id]);\nconst selectedTemplates = (Array.isArray(data.selectedTemplates) && data.selectedTemplates.length\n  ? data.selectedTemplates\n  : selectedTemplateIds.map((id) => supportTemplates[id]).filter(Boolean)\n).filter(Boolean);\nconst selectedTemplate = data.selectedTemplate || data.recommendedTemplate || selectedTemplates[0] || supportTemplates[data.recommendedTemplateId] || null;\nconst finalTemplateIds = unique((selectedTemplates.length ? selectedTemplates : [selectedTemplate].filter(Boolean)).map((template) => template.id || '').concat(selectedTemplateIds));\nconst primaryTemplateId = String(selectedTemplate?.id || finalTemplateIds[0] || data.selectedTemplateId || data.recommendedTemplateId || '').trim();\n\nfunction stripTemplateChrome(body) {\n  let text = String(body || '').replace(/\\r\\n/g, '\\n').trim();\n  text = text.replace(/^Bonjour[\\s,!.]*\\n+/i, '');\n  text = text.replace(/^Merci pour votre message\\.?\\n+/i, '');\n  text = text.replace(/\\n*Nous restons disponibles[\\s\\S]*$/i, '');\n  text = text.replace(/\\n*Cordialement,[\\s\\S]*$/i, '');\n  return text.trim();\n}\n\nfunction combinedTemplateBody(signature) {\n  const templates = selectedTemplates.length ? selectedTemplates : [selectedTemplate].filter(Boolean);\n  const paragraphs = [];\n  for (const template of templates) {\n    const core = stripTemplateChrome(template?.body || '');\n    if (!core) continue;\n    for (const paragraph of core.split(/\\n{2,}/).map((part) => part.trim()).filter(Boolean)) {\n      const normalizedParagraph = normalize(paragraph);\n      if (!paragraphs.some((existing) => normalize(existing) === normalizedParagraph)) paragraphs.push(paragraph);\n    }\n  }\n\n  if (!paragraphs.length) {\n    paragraphs.push('Nous avons bien pris en compte votre demande.');\n    paragraphs.push('Nous avons fait le n\\u00e9cessaire de notre c\\u00f4t\\u00e9.');\n  }\n\n  return [\n    'Bonjour,',\n    '',\n    'Merci pour votre message.',\n    '',\n    paragraphs.join('\\n\\n'),\n    '',\n    'Nous restons disponibles pour toute question.',\n    '',\n    'Cordialement,',\n    signature\n  ].join('\\n');\n}\n\nfunction fallbackDraft(reason = 'reponse_ia_indisponible_ou_non_parseable') {\n  const signature = data.supportSignature || data.brand?.signature || 'L equipe support';\n  const subject = data.originalSubject || 'Votre demande';\n  const body = combinedTemplateBody(signature);\n  return {\n    reply_subject: /^re:/i.test(subject) ? subject : 'Re: ' + subject,\n    reply_body: body,\n    internal_summary: finalTemplateIds.length\n      ? 'Brouillon de secours base sur les templates ' + finalTemplateIds.join(', ') + ' car la reponse IA etait indisponible, incomplete ou non parseable.'\n      : 'Brouillon de secours utilise car la reponse IA etait indisponible ou non parseable.',\n    needs_human_review: true,\n    confidence: 0,\n    template_id_used: finalTemplateIds.join('+') || 'fallback_generic',\n    fallback_reason: reason\n  };\n}\n\nfunction hasVagueVerification(body) {\n  const normalizedBody = normalize(body);\n  return [\n    'allons verifier',\n    'vais verifier',\n    'va verifier',\n    'verifier votre dossier',\n    'verification de votre dossier',\n    'reponse precise au plus vite'\n  ].some((phrase) => normalizedBody.includes(phrase));\n}\n\nfunction templateAppearsCovered(templateId, normalizedBody) {\n  const requirements = {\n    guide: ['guide', 'piece jointe'],\n    taille_confirmee: ['taille'],\n    taille_incomplete: ['taille'],\n    retour_taille: ['taille'],\n    genouillere_manquante: ['genouillere', 'manquante', 'necessaire'],\n    produit_abime: ['demande', 'necessaire'],\n    remboursement: ['rembours'],\n    livraison: ['commande'],\n    livraison_affichage_livre: ['affichage', 'pas encore ete livre'],\n    annulation: ['annulation'],\n    retour_details: ['retour'],\n    offre: ['offre'],\n    logo: ['logo'],\n    product_info_generic: ['genouillere']\n  };\n  const required = requirements[templateId] || [];\n  return required.every((word) => normalizedBody.includes(word));\n}\n\nfunction mustUseTemplateFallback(draft) {\n  const body = String(draft?.reply_body || '').trim();\n  if (!body) return true;\n  const normalizedBody = normalize(body);\n  if (finalTemplateIds.includes('guide')) {\n    const guideOk = normalizedBody.includes('guide') &&\n      (normalizedBody.includes('dematerialise') || normalizedBody.includes('numerique')) &&\n      normalizedBody.includes('piece jointe');\n    if (!guideOk) return true;\n  }\n  // Do not force exact wording for delivery-display cases; the writer can phrase it naturally.\n  if (finalTemplateIds.includes('genouillere_manquante')) {\n    const asksUnneededInfo = normalizedBody.includes('photo') || normalizedBody.includes('numero de commande') || normalizedBody.includes('transmettre votre numero') || normalizedBody.includes('informations de suivi') || normalizedBody.includes('numero de suivi') || normalizedBody.includes('offre achetee') || normalizedBody.includes('offerte') || normalizedBody.includes('allons verifier') || normalizedBody.includes('verifier votre dossier');\n    const missingItemCovered = /(genouillere|article|produit)/.test(normalizedBody) && /(manqu|renvoi|renvoyer|necessaire|pris en compte)/.test(normalizedBody);\n    if (asksUnneededInfo || !missingItemCovered) return true;\n  }\n  if (finalTemplateIds.includes('produit_abime')) {\n    const asksUnneededInfo = normalizedBody.includes('photo') || normalizedBody.includes('numero de commande') || normalizedBody.includes('transmettre votre numero') || normalizedBody.includes('allons verifier') || normalizedBody.includes('verifier votre dossier');\n    if (asksUnneededInfo) return true;\n  }\n  if (finalTemplateIds.includes('retour_details')) {\n    const asksUnneededInfo = normalizedBody.includes('photo') || normalizedBody.includes('numero de commande') || normalizedBody.includes('transmettre votre numero') || normalizedBody.includes('allons verifier') || normalizedBody.includes('verifier votre dossier');\n    if (asksUnneededInfo) return true;\n  }\n  if (finalTemplateIds.includes('taille_incomplete')) {\n    const asksUnneededInfo = normalizedBody.includes('numero de commande') || normalizedBody.includes('transmettre votre numero') || normalizedBody.includes('photo');\n    if (asksUnneededInfo) return true;\n  }\n  // Multi-request drafts should not be replaced by a stitched template just because wording differs.\n  if (primaryTemplateId && !['generic_clarification', 'empty_body'].includes(primaryTemplateId) && hasVagueVerification(body)) return true;\n  return false;\n}\n\nlet draft = fallbackDraft();\nconst aiDraftText = extractOutputText(raw);\nlet parseError = '';\n\ntry {\n  const parsed = parseJsonSafe(aiDraftText);\n  if (parsed) draft = parsed;\n} catch (error) {\n  parseError = error.message;\n  draft.parse_error = error.message;\n}\n\nif (mustUseTemplateFallback(draft)) {\n  const reason = parseError ? 'parse_error:' + parseError : (aiDraftText ? 'draft_incomplet_ou_inadapte' : 'empty_ai_output');\n  draft = fallbackDraft(reason);\n}\n\nconst originalSubject = data.originalSubject || 'Votre demande';\nconst draftSubject = draft.reply_subject || (/^re:/i.test(originalSubject) ? originalSubject : 'Re: ' + originalSubject);\nconst templatesNeedReview = selectedTemplates.some((template) => template?.needsHumanReview || template?.requiresAttachment);\n\nreturn [\n  {\n    json: {\n      ...data,\n      selectedTemplate,\n      selectedTemplates,\n      selectedTemplateId: primaryTemplateId,\n      selectedTemplateIds: finalTemplateIds,\n      aiDraftRaw: raw,\n      aiDraftText,\n      aiDraft: draft,\n      draftTo: data.customerEmail || data.replyToResolved || data.originalReplyTarget,\n      draftSubject,\n      draftBody: draft.reply_body,\n      needsHumanReview: draft.needs_human_review !== false || data.needsHumanReview === true || templatesNeedReview\n    }\n  }\n];"
+      },
+      "id": "e3f61ba5-2b8f-424d-b967-c0bc72246f87",
+      "name": "Parse AI Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "get",
+        "threadId": "={{ $json.threadId || $json.message?.threadId || $json.payload?.threadId || '' }}",
+        "simple": false,
+        "options": {
+          "returnOnlyMessages": false
+        }
+      },
+      "id": "b4f3f134-b0bf-48f6-a7b4-24d12c229ef6",
+      "name": "Thread Get",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -500,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "writer-livraison",
+                    "leftValue": "={{ $json.writerFamily }}",
+                    "rightValue": "livraison",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "writer-remboursement",
+                    "leftValue": "={{ $json.writerFamily }}",
+                    "rightValue": "remboursement",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "writer-autre",
+                    "leftValue": "={{ $json.writerFamily }}",
+                    "rightValue": "autre",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e39202bb-6cb4-45e0-b951-4bc7d4630d19",
+      "name": "Writer Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        2560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "={{ $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini' }}",
+          "mode": "id"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "={{ $json.agentDraftPromptLivraison }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "adf33e8d-d9c9-4970-872b-9f0f5c1666d8",
+      "name": "Agent IA - Writer - Livraison",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        2840,
+        -120
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "={{ $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini' }}",
+          "mode": "id"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "={{ $json.agentDraftPromptRemboursement }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "f68a6f8d-9e8b-4f82-bb16-2f5a9d15fd6f",
+      "name": "Agent IA - Writer - Remboursement",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        2840,
+        80
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "={{ $vars.OPENAI_MODEL_LINEA_PARIS || $vars.OPENAI_MODEL || 'gpt-4.1-mini' }}",
+          "mode": "id"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "={{ $json.agentDraftPromptAutre }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "f741bd36-501b-4f87-a631-49ad3708c931",
+      "name": "Agent IA - Writer - Autre",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        2840,
+        280
+      ],
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $input.first().json || {};\n\nfunction extractEmail(value) {\n  const raw = String(value || '').trim();\n  if (!raw) return '';\n  const angle = raw.match(/<([^>]+)>/);\n  if (angle && angle[1]) return angle[1].trim().toLowerCase();\n  const direct = raw.match(/[A-Z0-9._%+-]+@[.A-Z0-9-]+[.][A-Z]{2,}/i);\n  return direct ? direct[0].toLowerCase() : '';\n}\n\nfunction extractEmails(value) {\n  if (!value) return [];\n  if (Array.isArray(value)) return value.flatMap(extractEmails);\n  if (typeof value === 'object') {\n    return [\n      ...extractEmails(value.address),\n      ...extractEmails(value.email),\n      ...extractEmails(value.text),\n      ...extractEmails(value.value),\n      ...extractEmails(value.from),\n      ...extractEmails(value.replyTo)\n    ];\n  }\n  return String(value).match(/[A-Z0-9._%+-]+@[.A-Z0-9-]+[.][A-Z]{2,}/ig)?.map((email) => email.toLowerCase()) || [];\n}\n\nfunction unique(values) {\n  return [...new Set(values.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))];\n}\n\nfunction normalize(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .toLowerCase();\n}\n\nfunction isSystemEmail(email) {\n  const clean = String(email || '').toLowerCase();\n  return !clean || /(^|[._-])(no-?reply|noreply|do-?not-?reply)([._-]|@)/.test(clean) || /mailer-daemon|notification|notifications|automated|shopify|forms?/.test(clean);\n}\n\nconst inboxAddresses = unique(Array.isArray(source.inboxAddresses) ? source.inboxAddresses : []);\nconst explicitCandidates = unique([\n  extractEmail(source.replyToResolved),\n  extractEmail(source.originalReplyTarget),\n  extractEmail(source.draftTo),\n  extractEmail(source.customerEmail),\n  extractEmail(source.aiUnderstanding?.customer_email_in_message),\n  ...(Array.isArray(source.recentClientParticipants) ? source.recentClientParticipants.map(extractEmail) : []),\n  extractEmail(source.originalFromEmail),\n  extractEmail(source.fromRaw)\n]);\nconst bodyCandidates = unique([\n  ...extractEmails(source.customerMessage),\n  ...extractEmails(source.threadHistoryText),\n  ...extractEmails(source.aiUnderstandingText),\n  ...extractEmails(source.aiDraftText)\n]);\nconst allCandidates = unique([...explicitCandidates, ...bodyCandidates]);\nconst rejectedCandidates = [];\nlet sendTo = '';\nlet sendToSource = '';\n\n// Phase 1: prefer a clean client email.\nfor (const candidate of allCandidates) {\n  if (!candidate) continue;\n  if (inboxAddresses.includes(candidate)) {\n    rejectedCandidates.push({ email: candidate, reason: 'internal_inbox_address_preferred_phase' });\n    continue;\n  }\n  if (isSystemEmail(candidate)) {\n    rejectedCandidates.push({ email: candidate, reason: 'system_or_no_reply_preferred_phase' });\n    continue;\n  }\n  sendTo = candidate;\n  sendToSource = explicitCandidates.includes(candidate) ? 'preferred_explicit_or_header_candidate' : 'preferred_body_or_thread_email_candidate';\n  break;\n}\n\n// Phase 2: temporary permissive mode. If it is an email, create a draft anyway.\nif (!sendTo && allCandidates.length) {\n  sendTo = allCandidates[0];\n  sendToSource = explicitCandidates.includes(sendTo) ? 'fallback_any_explicit_or_header_candidate' : 'fallback_any_body_or_thread_email_candidate';\n}\n\nconst blocked = [];\nconst strictNoDraftIntents = new Set(['partnership_request', 'marketing_or_sales', 'automated_notification', 'not_customer_request']);\nconst requestIntent = String(source.requestIntent || source.aiUnderstanding?.intent || '').trim();\nconst selectedTemplateIds = Array.isArray(source.selectedTemplateIds) && source.selectedTemplateIds.length ? source.selectedTemplateIds : [source.selectedTemplateId || source.recommendedTemplateId || source.aiDraft?.template_id_used].filter(Boolean);\nconst positiveTemplateSelected = selectedTemplateIds.some((id) => !['generic_clarification', 'empty_body'].includes(String(id || '').trim()));\nconst aiSaysNoDraft = source.aiUnderstanding?.should_create_draft === false;\nconst triageNoDraftGeneric = aiSaysNoDraft && !positiveTemplateSelected;\nconst strictNoDraft = strictNoDraftIntents.has(requestIntent) || source.nonClientDetectedByRules === true;\nif (strictNoDraft) blocked.push('non_customer_or_automated_email');\nif (triageNoDraftGeneric) blocked.push('triage_no_draft_generic');\nif (!sendTo) blocked.push('missing_reply_target');\nif (sendTo && isSystemEmail(sendTo)) blocked.push('system_or_no_reply_target');\nconst ignoredBlocks = [];\nif (source.skipDraft || source.shouldCreateDraft === false) ignoredBlocks.push('ignored_non_customer_or_no_draft');\nif (source.replyConflictWithInbox || (sendTo && inboxAddresses.includes(sendTo))) ignoredBlocks.push('ignored_internal_reply_target');\nif (sendTo && isSystemEmail(sendTo)) ignoredBlocks.push('ignored_system_or_no_reply_target');\n\nif (blocked.length) {\n  return [\n    {\n      json: {\n        ...source,\n        draftGateStatus: 'blocked',\n        draftGateBlockedReasons: blocked,\n        draftGateIgnoredBlocks: ignoredBlocks,\n        draftGateEmailCandidates: allCandidates,\n        draftGateRejectedEmailCandidates: rejectedCandidates,\n        draftGateSendToSource: sendToSource,\n        draftMessage: source.draftBody,\n        createAsReply: Boolean(String(source.originalThreadId || source.threadId || '').trim())\n      }\n    }\n  ];\n}\n\nreturn [\n  {\n    json: {\n      ...source,\n      draftGateStatus: 'passed_customer_draft_mode',\n      draftGateBlockedReasons: [],\n      draftGateIgnoredBlocks: ignoredBlocks,\n      draftGateEmailCandidates: allCandidates,\n      draftGateRejectedEmailCandidates: rejectedCandidates,\n      draftGateSendToSource: sendToSource,\n      replyToResolved: sendTo,\n      threadIdResolved: String(source.originalThreadId || source.threadId || '').trim(),\n      draftMessage: source.draftBody,\n      createAsReply: Boolean(String(source.originalThreadId || source.threadId || '').trim())\n    }\n  }\n];"
+      },
+      "id": "ac9fc252-6e58-4908-bafb-ff1d91f9f7ce",
+      "name": "Draft Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3400,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "mode-reply",
+                    "leftValue": "={{ $json.draftGateStatus !== 'blocked' && $json.createAsReply ? 'reply' : 'blocked' }}",
+                    "rightValue": "reply",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "mode-new",
+                    "leftValue": "={{ $json.draftGateStatus !== 'blocked' && !$json.createAsReply ? 'new' : 'blocked' }}",
+                    "rightValue": "new",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a87be1a8-7548-4e77-a49e-fbf77e8a17aa",
+      "name": "Draft Mode",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        3680,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.draftSubject }}",
+        "emailType": "text",
+        "message": "={{ $json.draftMessage }}",
+        "options": {
+          "sendTo": "={{ $json.replyToResolved }}"
+        }
+      },
+      "id": "f8751ca0-faf7-4091-9b98-825e3051efb6",
+      "name": "Gmail - Create Draft New",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3960,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $input.first().json || {};\n\nconst rawBody = String(source.draftBody || '').trim();\nconst signature = source.supportSignature || source.brand?.signature || 'L equipe support';\nconst flags = [];\n\nconst forbiddenTerms = [\n  ...(source.logisticsPolicy?.forbiddenPublicTerms || []),\n  ...(source.logisticsPolicy?.forbiddenCustomerTerms || []),\n  'dropshipping',\n  'drop shipping',\n  'fournisseur',\n  'chine',\n  'chinois',\n  'aliexpress',\n  'usine',\n  'entrepot',\n  'pays d expedition',\n  'pays d\\'expedition'\n].map((term) => String(term || '').trim()).filter(Boolean);\n\nfunction normalize(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .toLowerCase();\n}\n\nfunction unique(values) {\n  return [...new Set(values.filter(Boolean))];\n}\n\nconst normalizedBody = normalize(rawBody);\nconst selectedTemplateId = String(source.selectedTemplateId || source.recommendedTemplateId || source.aiDraft?.template_id_used || '').trim();\nfunction uniqueStrings(values) { return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]; }\nconst selectedTemplateIds = uniqueStrings(Array.isArray(source.selectedTemplateIds) && source.selectedTemplateIds.length ? source.selectedTemplateIds : [selectedTemplateId]);\nconst selectedTemplates = (Array.isArray(source.selectedTemplates) ? source.selectedTemplates : []).filter(Boolean);\nconst draftOnlyActionOkTemplateIds = ['remboursement', 'retour_details', 'retour_taille', 'taille_confirmee', 'genouillere_manquante', 'produit_abime', 'genouillere_roule'];\nconst allowDraftOnlySensitiveAction = selectedTemplateIds.some((id) => draftOnlyActionOkTemplateIds.includes(id)) && source.needsHumanReview === true;\nconst forbiddenHits = unique(forbiddenTerms.filter((term) => normalizedBody.includes(normalize(term))));\nif (forbiddenHits.length) flags.push('forbidden_public_terms:' + forbiddenHits.join(','));\n\nconst sensitivePromisePatterns = [\n  /\\b(remboursement|rembourse)\\s+(valide|confirme|effectue|accepte|sera effectue|a ete effectue)\\b/i,\n  /\\b(nous allons|je vais|on va)\\s+(vous\\s+)?rembourser\\b/i,\n  /\\b(annulation|adresse|commande)\\s+(confirmee|modifiee|validee)\\b/i,\n  /\\b(remplacement|renvoi|nouvel envoi)\\s+(gratuit|confirme|valide)\\b/i\n];\nif (!allowDraftOnlySensitiveAction && sensitivePromisePatterns.some((pattern) => pattern.test(rawBody))) flags.push('sensitive_action_promised');\n\nconst hasExactDate = /\\b\\d{1,2}[\\/.-]\\d{1,2}(?:[\\/.-]\\d{2,4})?\\b/.test(rawBody) || /\\b(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\\s+\\d{1,2}\\b/i.test(rawBody);\nif (hasExactDate && !source.estimatedDeliveryAt) flags.push('exact_delivery_date_without_source');\n\nconst customerAskedTracking = /\\b(numero|num[e?]ro|lien|suivi|tracking|track)\\b/i.test(source.customerMessage || '');\nif (source.trackingNumber && rawBody.includes(String(source.trackingNumber)) && !customerAskedTracking) {\n  flags.push('tracking_number_disclosed_without_request');\n}\n\nif (rawBody.length > 2200) flags.push('draft_too_long');\nif (!rawBody) flags.push('empty_draft');\n\nfunction stripTemplateChrome(body) {\n  let text = String(body || '').replace(/\\r\\n/g, '\\n').trim();\n  text = text.replace(/^Bonjour[\\s,!.]*\\n+/i, '');\n  text = text.replace(/^Merci pour votre message\\.?\\n+/i, '');\n  text = text.replace(/\\n*Nous restons disponibles[\\s\\S]*$/i, '');\n  text = text.replace(/\\n*Cordialement,[\\s\\S]*$/i, '');\n  return text.trim();\n}\n\nfunction combinedTemplateFallback() {\n  if (selectedTemplates.length < 1) return '';\n  const paragraphs = [];\n  for (const template of selectedTemplates) {\n    const core = stripTemplateChrome(template?.body || '');\n    if (!core) continue;\n    for (const paragraph of core.split(/\\n{2,}/).map((part) => part.trim()).filter(Boolean)) {\n      const normalizedParagraph = normalize(paragraph);\n      if (!paragraphs.some((existing) => normalize(existing) === normalizedParagraph)) paragraphs.push(paragraph);\n    }\n  }\n  if (!paragraphs.length) return '';\n  return [\n    'Bonjour,',\n    '',\n    'Merci pour votre message.',\n    '',\n    paragraphs.join('\\n\\n'),\n    '',\n    'Nous restons disponibles pour toute question.',\n    '',\n    'Cordialement,',\n    signature\n  ].join('\\n');\n}\n\nfunction fallbackForFamily() {\n  const combined = combinedTemplateFallback();\n  if (combined) return combined;\n\n  if (selectedTemplateIds.includes('guide') || selectedTemplateId === 'guide') {\n    return [\n      'Bonjour,',\n      '',\n      'Merci pour votre message.',\n      '',\n      'Le guide \"Genou sans douleur\" est un guide d\\u00e9mat\\u00e9rialis\\u00e9, il n\\u2019est donc pas ajout\\u00e9 physiquement au colis.',\n      '',\n      'Il vous a d\\u00e9j\\u00e0 \\u00e9t\\u00e9 envoy\\u00e9 par email apr\\u00e8s votre commande.',\n      '',\n      'Nous vous le remettons en pi\\u00e8ce jointe \\u00e0 cet email afin que vous puissiez le consulter facilement.',\n      '',\n      'Nous restons disponibles pour toute question.',\n      '',\n      'Cordialement,',\n      signature\n    ].join('\\n');\n  }\n\n  if (source.writerFamily === 'livraison') {\n    return [\n      'Bonjour,',\n      '',\n      'Merci pour votre message.',\n      '',\n      'Votre commande a subi un l\\u00e9ger retard d\\u2019acheminement.',\n      '',\n      'Elle devrait arriver courant de la semaine / d\\u00e9but de semaine prochaine / fin de semaine prochaine.',\n      '',\n      'Votre commande est bien en cours d\\u2019acheminement.',\n      '',\n      'Nous restons disponibles pour toute question.',\n      '',\n      'Cordialement,',\n      signature\n    ].join('\\n');\n  }\n\n  if (source.writerFamily === 'remboursement') {\n    if (selectedTemplateIds.includes('remboursement') || selectedTemplateIds.includes('retour_details')) {\n      return [\n        'Bonjour,',\n        '',\n        'Merci pour votre message.',\n        '',\n        'Nous avons bien pris en compte votre demande et le remboursement de votre commande a été effectué.',\n        '',\n        'Vous recevrez également un email de confirmation du remboursement.',\n        '',\n        'Le délai d’apparition sur votre moyen de paiement est généralement de 5 à 10 jours ouvrés.',\n        '',\n        'Vous n’avez pas besoin de retourner votre commande.',\n        '',\n        'Nous restons disponibles pour toute question.',\n        '',\n        'Cordialement,',\n        signature\n      ].join('\\n');\n    }\n    return [\n      'Bonjour,',\n      '',\n      'Merci pour votre message.',\n      '',\n      'Nous avons bien pris en compte votre demande.',\n      '',\n      'Nous avons fait le nécessaire de notre côté.',\n      '',\n      'Nous restons disponibles pour toute question.',\n      '',\n      'Cordialement,',\n      signature\n    ].join('\\n');\n  }\n\n  return [\n    'Bonjour,',\n    '',\n    'Merci pour votre message.',\n    '',\n    'Nous avons bien pris en compte votre demande.',\n    '',\n    'Nous allons faire le n\\u00e9cessaire de notre c\\u00f4t\\u00e9.',\n    '',\n    'Nous restons disponibles pour toute question.',\n    '',\n    'Cordialement,',\n    signature\n  ].join('\\n');\n}\n\nfunction polishBody(body) {\n  let text = String(body || '').replace(/\\r\\n/g, '\\n').trim();\n  if (!/^bonjour[\\s,!.]/i.test(text)) text = 'Bonjour,\\n\\n' + text;\n  text = text.replace(/^Bonjour[\\s,!.]*\\n+Merci pour votre message\\.?/i, 'Bonjour,\\n\\nMerci pour votre message.');\n  text = text\n    .split('\\n')\n    .map((line) => line.trim())\n    .join('\\n')\n    .replace(/\\n{3,}/g, '\\n\\n');\n  text = text\n    .replace(/\\s+selon l[’']avancement du transporteur/gi, '')\n    .replace(/\\s+selon le transporteur/gi, '')\n    .replace(/Il vous a normalement déjà été envoyé/gi, 'Il vous a déjà été envoyé')\n    .replace(/Nous vous le remettons gratuitement/gi, 'Nous vous le remettons')\n    .replace(/afin que votre demande soit traitée correctement/gi, 'pour traiter votre demande')\n    .replace(/afin de vous apporter la solution adaptée/gi, 'pour régler la situation au mieux')\n    .replace(/afin de vous apporter la nécessaire/gi, 'pour régler la situation au mieux');\n  if (source.writerFamily === 'livraison') {\n    text = text\n      .replace(/\\n*Nous sommes [^\\n]*pour ce retard d[^\\n]*acheminement\\.\\s*/i, '\\n\\n')\n      .replace(/Votre commande a subi un retard d[^\\n]*acheminement\\./i, 'Votre commande a subi un léger retard d’acheminement.')\n      .replace(/\\n{3,}/g, '\\n\\n');\n  }\n  if (!/cordialement|bien a vous|bonne journee|l equipe|l\\s*equipe/i.test(normalize(text))) {\n    text += '\\n\\nCordialement,\\n' + signature;\n  }\n  if (source.trackingNumber && !customerAskedTracking) {\n    text = text.replaceAll(String(source.trackingNumber), '').replace(/[ \\t]+\\n/g, '\\n');\n  }\n  return text.trim();\n}\n\nfunction stripReplyPrefix(value) {\n  let text = String(value || '').trim();\n  while (/^(re|fw|fwd|tr)\\s*:\\s*/i.test(text)) {\n    text = text.replace(/^(re|fw|fwd|tr)\\s*:\\s*/i, '').trim();\n  }\n  return text;\n}\n\nfunction stripBrandPrefix(subject, brandName) {\n  let text = String(subject || '').trim();\n  const normalizedText = normalize(text).trim();\n  const normalizedBrand = normalize(brandName).trim();\n  if (normalizedBrand && normalizedText.startsWith(normalizedBrand)) {\n    const afterBrand = text.slice(brandName.length).trim();\n    if (/^[:\\-??]/.test(afterBrand)) return afterBrand.replace(/^[:\\-??]\\s*/, '').trim();\n  }\n  return text;\n}\n\n\nfunction subjectLabelFromTemplates() {\n  const ids = selectedTemplateIds.map((id) => String(id || '').trim()).filter(Boolean);\n  const has = (id) => ids.includes(id);\n  if (has('remboursement') || has('retour_details')) return 'Remboursement de votre commande';\n  if (has('livraison_affichage_livre')) return 'Suivi de votre livraison';\n  if (has('livraison') && has('guide')) return 'Suivi de commande et guide';\n  if (has('logo') && has('genouillere_roule')) return 'Pr\\u00e9sentation et ajustement de vos genouill\\u00e8res';\n  if (has('guide')) return 'Guide Genou sans douleur';\n  if (has('livraison')) return 'Suivi de votre commande';\n  if (has('genouillere_manquante')) return 'Genouill\\u00e8re manquante';\n  if (has('produit_abime')) return 'Article re\\u00e7u';\n  if (has('retour_taille') || has('taille_confirmee') || has('taille_incomplete')) return 'Demande de taille';\n  if (has('adresse') || has('adresse_incomplete')) return 'Modification d\\u2019adresse';\n  if (has('annulation')) return 'Annulation de commande';\n  if (has('genouillere_roule')) return 'Positionnement de vos genouill\\u00e8res';\n  if (has('logo')) return 'Pr\\u00e9sentation de vos genouill\\u00e8res';\n  if (has('offre')) return 'Votre offre';\n  if (has('livraison_internationale')) return 'Livraison';\n  if (has('commande_confirmation')) return 'Confirmation de commande';\n  if (has('conseil_taille')) return 'Conseil de taille';\n  if (has('product_info_generic')) return 'Informations sur vos genouill\\u00e8res';\n  return '';\n}\n\nfunction isBadSubjectCore(subject) {\n  const brandName = String(source.brandName || source.brand?.name || 'Lin\\u00e9a Paris');\n  const core = normalize(stripBrandPrefix(stripReplyPrefix(subject || ''), brandName)).trim();\n  if (!core) return true;\n  if (/^(merci|merci pour votre message|votre message|votre demande|demande client|reponse|reponse a votre message|support client|sav|bonjour)$/.test(core)) return true;\n  if (/^(question|information|informations|suivi)$/.test(core)) return true;\n  return false;\n}\n\nfunction formatBrandSubject(value) {\n  const brandName = String(source.brandName || source.brand?.name || 'Lin\\u00e9a Paris').trim() || 'Lin\\u00e9a Paris';\n  const templateLabel = subjectLabelFromTemplates();\n  let subject = stripReplyPrefix(value || '');\n  subject = stripReplyPrefix(stripBrandPrefix(subject, brandName));\n\n  if (templateLabel) {\n    return brandName + ' : ' + templateLabel;\n  }\n\n  if (!subject || isBadSubjectCore(subject)) {\n    const intentLabel = String(source.requestIntentLabel || source.aiUnderstanding?.requested_action_fr || '').trim();\n    subject = intentLabel && !isBadSubjectCore(intentLabel) ? intentLabel : 'Votre demande';\n  }\n\n  subject = subject.replace(/^(objet|sujet)\\s*[:\\-]\\s*/i, '').trim();\n  if (subject.length > 70) subject = subject.slice(0, 67).trim() + '...';\n  return brandName + ' : ' + subject;\n}\n\nconst shouldReplace = flags.some((flag) => [\n  'empty_draft',\n  'sensitive_action_promised',\n  'exact_delivery_date_without_source'\n].includes(flag) || flag.startsWith('forbidden_public_terms:'));\n\nconst guardedBody = shouldReplace ? fallbackForFamily() : polishBody(rawBody);\nconst guardedSubject = formatBrandSubject(source.draftSubject || '');\n\nreturn [\n  {\n    json: {\n      ...source,\n      draftBodyBeforeSafetyGuard: rawBody,\n      draftBody: guardedBody,\n      draftSubject: guardedSubject,\n      draftSafetyFlags: flags,\n      draftSafetyStatus: flags.length ? 'review_recommended' : 'passed',\n      draftWasReplacedBySafetyGuard: shouldReplace,\n      needsHumanReview: source.needsHumanReview === true || flags.length > 0\n    }\n  }\n];"
+      },
+      "id": "23b7e4d6-b32f-4c5d-a27c-908943779875",
+      "name": "AI Draft Safety Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3260,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Controle qualite IA\n\nLes 4 nodes Agent IA sont regl?s pour reduire les hallucinations:\n- temperature 0.2\n- topP 0.9\n- 2 retries\n- timeout 60s\n- limite tokens\n\nLe node \"AI Draft Safety Guard\" passe apres la redaction IA et avant Gmail.\n\nIl signale ou neutralise:\n- mots interdits dropshipping/origine/logistique\n- promesse de remboursement/annulation/adresse\n- date exacte sans source tracking\n- numero de suivi donne sans demande claire\n- brouillon vide ou trop long\n\nTu peux voir le resultat dans les champs:\n- draftSafetyStatus\n- draftSafetyFlags\n- draftWasReplacedBySafetyGuard",
+        "height": 520,
+        "width": 560,
+        "color": 5
+      },
+      "id": "af320ffb-94e4-46a6-8804-3fd05098a4e0",
+      "name": "AI Safety Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3020,
+        -520
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Templates tries avant test\n\nLes templates des anciennes automatisations ont ete tries dans `Brand & Product Settings` > `supportTemplates`.\n\nObjectif: garder les cas SAV les plus utiles pour les premiers tests. Comme le workflow cree uniquement des brouillons, les templates remboursement et taille peuvent dire que le necessaire a ete fait, avec relecture humaine obligatoire avant envoi.\n\nTemplates gardes: livraison, remboursement, retour_details, retour_taille, annulation, taille_incomplete, taille_confirmee, guide, offre, logo, product_info_generic, generic_clarification, empty_body.\n\nTemplates retires ou fusionnes: livraison_delais, taille_question, remboursement_raison_connue, remboursement_complet, refund_confirmed_after_exchange.\n\nTous les templates sensibles gardent `needsHumanReview: true` et doivent rester des brouillons relus avant envoi.",
+        "height": 420,
+        "width": 620,
+        "color": 6
+      },
+      "id": "a5119e44-e825-4f68-a0ba-7e28acc7db3f",
+      "name": "Legacy Template Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        -520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $input.first().json || {};\n\nfunction extractEmail(value) {\n  const raw = String(value || '').trim();\n  if (!raw) return '';\n  const angle = raw.match(/<([^>]+)>/);\n  if (angle && angle[1]) return angle[1].trim().toLowerCase();\n  const direct = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}/i);\n  return direct ? direct[0].toLowerCase() : '';\n}\n\nfunction extractEmails(value) {\n  if (!value) return [];\n  if (Array.isArray(value)) return value.flatMap(extractEmails);\n  if (typeof value === 'object') {\n    return [\n      ...extractEmails(value.address),\n      ...extractEmails(value.email),\n      ...extractEmails(value.text),\n      ...extractEmails(value.value),\n      ...extractEmails(value.from),\n      ...extractEmails(value.replyTo)\n    ];\n  }\n  return String(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}/ig)?.map((email) => email.toLowerCase()) || [];\n}\n\nfunction normalize(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[̀-ͯ]/g, '')\n    .toLowerCase();\n}\n\nfunction unique(values) {\n  return [...new Set(values.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))];\n}\n\nconst fallbackSendTo = extractEmail(source.replyToResolved || source.originalReplyTarget || source.draftTo || source.customerEmail || source.aiUnderstanding?.customer_email_in_message || source.fromRaw || '');\nconst sendTo = source.replyToResolved || fallbackSendTo || '';\nconst selectedTemplateId = String(source.selectedTemplateId || source.recommendedTemplateId || source.aiDraft?.template_id_used || '').trim();\nconst selectedTemplateIds = Array.isArray(source.selectedTemplateIds) && source.selectedTemplateIds.length ? source.selectedTemplateIds : [selectedTemplateId].filter(Boolean);\nconst requiresAttachment = Boolean(source.selectedTemplate?.requiresAttachment || source.recommendedTemplate?.requiresAttachment || source.writerContext?.template?.requiresAttachment);\nconst guideLikely = selectedTemplateIds.includes('guide') || source.explicitGuideRequest === true || /\\b(guide|livret|manuel|notice|pdf)\\b/.test(normalize(source.latestCustomerMessage || source.customerMessage || ''));\nconst computedCandidates = unique([\n  ...(Array.isArray(source.draftGateEmailCandidates) ? source.draftGateEmailCandidates : []),\n  ...extractEmails(source.replyToResolved),\n  ...extractEmails(source.originalReplyTarget),\n  ...extractEmails(source.draftTo),\n  ...extractEmails(source.customerEmail),\n  ...extractEmails(source.aiUnderstanding?.customer_email_in_message),\n  ...extractEmails(source.fromRaw),\n  ...extractEmails(source.customerMessage),\n  ...extractEmails(source.threadHistoryText)\n]);\nconst blocked = Array.isArray(source.draftGateBlockedReasons) ? source.draftGateBlockedReasons : [];\nconst reasonLabels = {\n  non_customer_or_no_draft: 'Le triage a decide de ne pas creer de brouillon: email non-client, automatisation, prospection, partenariat, ou should_create_draft=false.',\n  non_customer_or_automated_email: 'Email bloque car il ressemble a une notification automatique, une prospection, un partenariat ou une demande non-client.',\n  triage_no_draft_generic: 'Email bloque car le triage IA indique de ne pas creer de brouillon et aucun template client precis n a ete detecte.',\n  missing_reply_target: 'Aucune adresse client fiable trouvee pour repondre. Le workflow a cherche dans From, Reply-To, email client detecte, corps du mail, historique et sortie IA.',\n  internal_reply_target: 'Adresse de reponse bloquee car elle semble etre une adresse interne de la boite.',\n  system_or_no_reply_target: 'Adresse de reponse bloquee car elle semble etre une adresse automatique ou no-reply.'\n};\n\nlet status = source.draftGateStatus !== 'blocked' && !blocked.length ? 'OK_VERS_GMAIL' : 'BLOQUE_AVANT_GMAIL';\nlet mainReason = blocked[0] || 'ok';\nlet summary = blocked.length\n  ? 'BLOQUE: ' + blocked.map((reason) => reasonLabels[reason] || reason).join(' | ')\n  : 'OK: mode permissif actif, le brouillon doit partir vers Gmail des qu une adresse existe.';\n\nif (guideLikely && blocked.includes('missing_reply_target') && computedCandidates.length) {\n  summary = 'GUIDE RECONNU, MAIS BLOQUE: des emails existent, mais aucun candidat fiable n a ete accepte. Regarder draftDiagnosticEmailCandidates et draftDiagnosticRejectedEmailCandidates.';\n} else if (guideLikely && blocked.includes('missing_reply_target')) {\n  summary = 'GUIDE RECONNU, MAIS BLOQUE: impossible de trouver une adresse client fiable malgre la recherche elargie.';\n} else if (guideLikely && blocked.includes('non_customer_or_no_draft')) {\n  summary = 'GUIDE DETECTE, MAIS BLOQUE: le triage a classe ce mail en non-client/no-draft. Verifier aiUnderstanding.intent et skipDraftReason.';\n} else if (guideLikely && !blocked.length) {\n  summary = 'GUIDE OK: le mail est reconnu comme demande de guide et peut aller vers Gmail. Ajouter le PDF manuellement avant envoi.';\n}\n\nreturn [\n  {\n    json: {\n      ...source,\n      draftDiagnosticStatus: status,\n      draftDiagnosticSummary: summary,\n      draftDiagnosticMainReason: mainReason,\n      draftDiagnosticReasons: blocked,\n      draftDiagnosticGuideLikely: guideLikely,\n      draftDiagnosticSendTo: sendTo,\n      draftDiagnosticEmailCandidates: computedCandidates,\n      draftDiagnosticRejectedEmailCandidates: source.draftGateRejectedEmailCandidates || [],\n      draftDiagnosticIgnoredBlocks: source.draftGateIgnoredBlocks || [],\n      draftDiagnosticSendToSource: source.draftGateSendToSource || '',\n      draftDiagnosticTemplateId: selectedTemplateId,\n      draftDiagnosticTemplateIds: selectedTemplateIds,\n      draftDiagnosticMultiRequestDetected: Boolean(source.multiRequestDetected),\n      draftDiagnosticRequiresAttachment: requiresAttachment,\n      draftDiagnosticIntent: source.requestIntent || source.aiUnderstanding?.intent || '',\n      draftDiagnosticSkipDraftReason: source.skipDraftReason || source.aiUnderstanding?.skip_draft_reason || '',\n      draftDiagnosticSafetyFlags: source.draftSafetyFlags || [],\n      draftDiagnosticQuickView: {\n        status,\n        mainReason,\n        summary,\n        sendTo,\n        emailCandidates: computedCandidates,\n        rejectedEmailCandidates: source.draftGateRejectedEmailCandidates || [],\n        ignoredBlocks: source.draftGateIgnoredBlocks || [],\n        sendToSource: source.draftGateSendToSource || '',\n        intent: source.requestIntent || source.aiUnderstanding?.intent || '',\n        template: selectedTemplateId,\n        templates: selectedTemplateIds,\n        multiRequestDetected: Boolean(source.multiRequestDetected),\n        requiresAttachment,\n        writerFamily: source.writerFamily || '',\n        shouldCreateDraft: source.shouldCreateDraft,\n        skipDraft: source.skipDraft,\n        skipDraftReason: source.skipDraftReason || '',\n        safetyFlags: source.draftSafetyFlags || []\n      }\n    }\n  }\n];"
+      },
+      "id": "c6f7c852-cbb3-4f43-b5ed-8f2237c6e0a8",
+      "name": "Diagnostic - Pourquoi pas de brouillon",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Diagnostic brouillon\n\nOuvre le node `Diagnostic - Pourquoi pas de brouillon` dans une execution.\n\nRegarde surtout `draftDiagnosticSummary`, `draftDiagnosticReasons`, `draftDiagnosticSendTo`, `draftDiagnosticTemplateId` et `draftDiagnosticIntent`.\n\nPour un guide bloque, la cause la plus probable est `missing_reply_target`: le guide est reconnu, mais aucune adresse client fiable n a ete trouvee.\n\nPour le template guide, `draftDiagnosticRequiresAttachment=true` veut dire: ajouter manuellement le PDF du guide avant envoi.",
+        "height": 300,
+        "width": 520,
+        "color": 5
+      },
+      "id": "a415c58f-774a-457f-b37b-6867ef4a5cad",
+      "name": "Diagnostic Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3260,
+        -440
+      ]
+    },
+    {
+      "id": "acfad1b5-8c39-4c58-b2e6-d50611aab82f",
+      "name": "Gmail Trigger - Sent Mail Audit",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -760,
+        520
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "in:sent newer_than:2d -to:infolineaparis@gmail.com",
+          "readStatus": "both"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "67eb8251-6e97-40dc-9316-4f6208cfc14a",
+      "name": "Sent Mail Audit Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        520
+      ],
+      "parameters": {
+        "jsCode": "\nfunction normalize(value) {\n  return String(value || '')\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .toLowerCase();\n}\n\nfunction normalizeText(value) {\n  return String(value || '')\n    .replace(/\\r/g, '\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n}\n\nfunction extractEmail(value) {\n  const raw = String(value || '').trim();\n  if (!raw) return '';\n  const angle = raw.match(/<([^>]+)>/);\n  if (angle && angle[1]) return angle[1].trim().toLowerCase();\n  const direct = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}/i);\n  return direct ? direct[0].toLowerCase() : '';\n}\n\nfunction buildHeaderMap(message) {\n  const values = [];\n  if (Array.isArray(message?.headers)) values.push(...message.headers);\n  else if (message?.headers && typeof message.headers === 'object') {\n    for (const [name, value] of Object.entries(message.headers)) {\n      if (Array.isArray(value)) value.forEach((item) => values.push({ name, value: String(item || '') }));\n      else values.push({ name, value: String(value || '') });\n    }\n  }\n  if (Array.isArray(message?.payload?.headers)) values.push(...message.payload.headers);\n  const map = {};\n  for (const header of values) {\n    const key = String(header?.name || '').toLowerCase();\n    if (!key) continue;\n    map[key] = map[key] || [];\n    map[key].push(String(header?.value || ''));\n  }\n  return map;\n}\n\nconst getHeader = (map, name) => (map[String(name || '').toLowerCase()] || [])[0] || '';\n\nfunction decodeBase64Url(input) {\n  const raw = String(input || '').trim();\n  if (!raw) return '';\n  const normalized = raw.replace(/-/g, '+').replace(/_/g, '/');\n  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);\n  try { return Buffer.from(padded, 'base64').toString('utf8'); } catch { return ''; }\n}\n\nfunction decodeHtml(input) {\n  return String(input || '')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&lt;/gi, '<')\n    .replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;|&apos;/gi, \"'\")\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ');\n}\n\nfunction payloadToText(message) {\n  const plain = [];\n  const html = [];\n  const visit = (part) => {\n    if (!part) return;\n    const mime = String(part.mimeType || '').toLowerCase();\n    const data = part.body?.data ? decodeBase64Url(part.body.data) : '';\n    if (data && mime.includes('text/plain')) plain.push(data);\n    else if (data && mime.includes('text/html')) html.push(decodeHtml(data));\n    if (Array.isArray(part.parts)) part.parts.forEach(visit);\n  };\n  visit(message?.payload);\n  const directText = message?.text || message?.textPlain || message?.body?.text || '';\n  const directHtml = message?.html || message?.textAsHtml || message?.body?.html || '';\n  const text = normalizeText([directText, ...plain].filter(Boolean).join('\\n\\n'));\n  if (text) return text;\n  return normalizeText(decodeHtml([directHtml, ...html, message?.snippet].filter(Boolean).join('\\n\\n')));\n}\n\nfunction stripQuotedHistory(text) {\n  const lines = normalizeText(text).split('\\n');\n  const kept = [];\n  for (const rawLine of lines) {\n    const line = rawLine.trim();\n    const clean = normalize(line);\n    if (/^>+/.test(line)) continue;\n    if (kept.some((value) => value.trim()) && (\n      /^le .+ a .*crit\\s*:/.test(clean) ||\n      /^on .+ wrote\\s*:/.test(clean) ||\n      /message d origine|original message|forwarded message/.test(clean) ||\n      /envoye depuis yahoo|sent from my iphone/.test(clean)\n    )) break;\n    kept.push(rawLine);\n  }\n  return normalizeText(kept.join('\\n'));\n}\n\nfunction stripChrome(body) {\n  let text = stripQuotedHistory(body);\n  text = text.replace(/^Bonjour[\\s,!.]*\\n+/i, '');\n  text = text.replace(/^Merci pour votre message\\.?\\n+/i, '');\n  text = text.replace(/\\n*Nous restons disponibles[\\s\\S]*$/i, '');\n  text = text.replace(/\\n*Cordialement,[\\s\\S]*$/i, '');\n  return normalizeText(text);\n}\n\nfunction classifySentReply(subject, body) {\n  const blob = normalize(subject + '\\n' + body);\n  const checks = [\n    ['guide', /\\b(guide|livre|pdf|piece jointe|dematerialise|genou sans douleur)\\b/],\n    ['genouillere_manquante', /\\b(genouillere|article|produit)\\b.*\\b(manquante|manquant|renvoyer|renvoi)\\b|\\bmanquante\\b.*\\bgenouillere\\b/],\n    ['livraison_affichage_livre', /\\b(probleme d affichage|affichee livree|indique livree|pas encore ete livre)\\b/],\n    ['livraison', /\\b(acheminement|retard|livraison|transporteur|colis|suivi|courant de la semaine|debut de semaine prochaine|fin de semaine prochaine)\\b/],\n    ['remboursement', /\\b(remboursement|rembourser|confirmation de remboursement)\\b/],\n    ['retour_taille', /\\b(taille|taille au dessus|taille superieure|echange|retour)\\b/],\n    ['adresse', /\\b(adresse|modification d adresse|nouvelle adresse)\\b/],\n    ['annulation', /\\b(annulation|annuler)\\b/],\n    ['produit_abime', /\\b(abime|defectueux|casse|endommage|defaut)\\b/],\n    ['conseil_taille', /\\b(tour de genou|cm|quelle taille|taille choisir|glisse|roule|serre)\\b/],\n    ['livraison_internationale', /\\b(luxembourg|belgique|suisse|royaume uni|international|pays)\\b/],\n    ['commande_confirmation', /\\b(commande validee|commande a bien ete validee|email de confirmation|courriers indesirables|paiement)\\b/],\n    ['logo', /\\b(logo|marquage|etiquette|design discret)\\b/]\n  ];\n  const found = checks.find(([, pattern]) => pattern.test(blob));\n  return found ? found[0] : 'autre';\n}\n\nconst headerMap = buildHeaderMap(source);\nconst subject = source.subject || getHeader(headerMap, 'subject') || '';\nconst fromEmail = extractEmail(source.from || getHeader(headerMap, 'from'));\nconst toEmail = extractEmail(source.to || getHeader(headerMap, 'to'));\nconst messageId = String(source.id || source.messageId || '').trim();\nconst threadId = String(source.threadId || source.message?.threadId || '').trim();\nconst sentAt = source.date || getHeader(headerMap, 'date') || new Date().toISOString();\nconst fullBody = payloadToText(source);\nconst finalBody = stripQuotedHistory(fullBody);\nconst coreBody = stripChrome(finalBody);\nconst brandLikely = /linea\\s*paris|lin[?e]a\\s*paris/i.test(subject + '\\n' + finalBody) || /l[?']?equipe\\s+linea\\s+paris|l[?']??quipe\\s+lin?a\\s+paris/i.test(finalBody);\n\nif (!brandLikely) {\n  return [{ json: { sentAuditStatus: 'ignored_non_linea_support_sent_mail', messageId, subject, toEmail, sentAt } }];\n}\n\nconst paragraphs = coreBody\n  .split(/\\n{2,}/)\n  .map((part) => normalizeText(part))\n  .filter((part) => part && part.length >= 12)\n  .filter((part) => !/^bonjour/i.test(part) && !/^merci pour votre message/i.test(part))\n  .slice(0, 8)\n  .map((part) => part.slice(0, 600));\n\nconst templateId = classifySentReply(subject, finalBody);\nconst learning = {\n  id: messageId || (threadId + ':' + Date.parse(sentAt || new Date().toISOString())),\n  threadId,\n  templateId,\n  family: ['livraison', 'livraison_affichage_livre'].includes(templateId) ? 'livraison' : (['remboursement', 'retour_taille', 'genouillere_manquante', 'produit_abime', 'annulation'].includes(templateId) ? 'remboursement' : 'autre'),\n  sentAt,\n  subjectShape: subject.replace(/^(re|fw|fwd|tr)\\s*:\\s*/i, '').replace(/#\\d+/g, '#COMMANDE').slice(0, 180),\n  paragraphs,\n  bodyPreview: finalBody.slice(0, 1200),\n  source: 'gmail_sent_after_manual_review'\n};\n\nlet memoryCount = 0;\ntry {\n  const staticData = $getWorkflowStaticData('global');\n  const key = 'lineaParisSentMailLearning';\n  const existing = Array.isArray(staticData[key]) ? staticData[key] : [];\n  const withoutDuplicate = existing.filter((item) => item && item.id !== learning.id);\n  withoutDuplicate.push(learning);\n  staticData[key] = withoutDuplicate.slice(-80);\n  staticData.lineaParisSentMailLearningUpdatedAt = new Date().toISOString();\n  memoryCount = staticData[key].length;\n} catch (error) {\n  return [{ json: { sentAuditStatus: 'memory_write_failed', messageId, subject, toEmail, sentAt, templateId, error: error.message, learning } }];\n}\n\nreturn [{\n  json: {\n    sentAuditStatus: 'recorded_for_future_drafts_only',\n    messageId,\n    threadId,\n    subject,\n    toEmail,\n    fromEmail,\n    sentAt,\n    templateId,\n    learnedParagraphCount: paragraphs.length,\n    memoryCount,\n    learningPreview: learning,\n    note: 'Lecture seule: aucun email envoye, aucun brouillon cree. Ces exemples servent seulement a guider les prochains brouillons.'\n  }\n}];"
+      }
+    },
+    {
+      "id": "a0983b5a-63ad-4077-acc6-f5834cecaaa7",
+      "name": "Sent Mail Learning Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -860,
+        420
+      ],
+      "parameters": {
+        "content": "## Lecture des mails envoyes\n\nCette branche lit les emails dans Gmail Envoyes apres correction manuelle.\n\nElle ne cree aucun brouillon et n envoie aucun email.\n\nDeux chemins existent maintenant:\n- Gmail Trigger - Sent Mail Audit, si n8n le declenche correctement.\n- Schedule - Sent Mail Audit toutes les 5 minutes, qui recherche les derniers mails envoyes et les passe dans la memoire.\n\nLe node Sent Mail Audit Memory extrait le style final, le type de demande et quelques paragraphes utiles, puis les garde dans la memoire statique n8n lineaParisSentMailLearning.\n\nLes prochains brouillons relisent cette memoire pour se rapprocher des corrections humaines.",
+        "height": 460,
+        "width": 600,
+        "color": 4
+      }
+    },
+    {
+      "id": "8b09c041-7a9b-4979-b3e5-7f9b0d31e6d2",
+      "name": "Schedule - Sent Mail Audit",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1040,
+        700
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "df5d8d42-a9cb-45c9-a264-8fd996e9ac33",
+      "name": "Gmail - Search Sent Mail Audit",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -760,
+        700
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 10,
+        "simple": false,
+        "filters": {
+          "q": "in:sent newer_than:2d -to:infolineaparis@gmail.com",
+          "readStatus": "both"
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger - New Client Email": {
+      "main": [
+        [
+          {
+            "node": "Thread Get",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Thread Get": {
+      "main": [
+        [
+          {
+            "node": "Email Context Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Mock Client Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Client Email": {
+      "main": [
+        [
+          {
+            "node": "Email Context Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Context Builder": {
+      "main": [
+        [
+          {
+            "node": "Brand & Product Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Brand & Product Settings": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Understanding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Understanding": {
+      "main": [
+        [
+          {
+            "node": "Agent IA - Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent IA - Triage": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Understanding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Understanding": {
+      "main": [
+        [
+          {
+            "node": "Prepare Shopify Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Shopify Query": {
+      "main": [
+        [
+          {
+            "node": "Shopify GraphQL - Find Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify GraphQL - Find Order": {
+      "main": [
+        [
+          {
+            "node": "Prepare 17TRACK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare 17TRACK": {
+      "main": [
+        [
+          {
+            "node": "17TRACK - Get Tracking Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17TRACK - Get Tracking Info": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Draft": {
+      "main": [
+        [
+          {
+            "node": "Writer Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Writer Router": {
+      "main": [
+        [
+          {
+            "node": "Agent IA - Writer - Livraison",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agent IA - Writer - Remboursement",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agent IA - Writer - Autre",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent IA - Writer - Livraison": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent IA - Writer - Remboursement": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent IA - Writer - Autre": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Draft": {
+      "main": [
+        [
+          {
+            "node": "AI Draft Safety Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Gate": {
+      "main": [
+        [
+          {
+            "node": "Draft Mode",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Diagnostic - Pourquoi pas de brouillon",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Mode": {
+      "main": [
+        [
+          {
+            "node": "Gmail - Create Draft Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail - Create Draft New",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Draft Safety Guard": {
+      "main": [
+        [
+          {
+            "node": "Draft Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger - Sent Mail Audit": {
+      "main": [
+        [
+          {
+            "node": "Sent Mail Audit Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule - Sent Mail Audit": {
+      "main": [
+        {
+          "node": "Gmail - Search Sent Mail Audit",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    },
+    "Gmail - Search Sent Mail Audit": {
+      "main": [
+        {
+          "node": "Sent Mail Audit Memory",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-05-08T01:26:37.940Z",
+  "versionId": "7d47f12b-893d-4db8-8a38-0caa46fbcb13"
+}
